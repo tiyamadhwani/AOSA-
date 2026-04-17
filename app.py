@@ -30,7 +30,9 @@ gemini_client = genai.Client(api_key=GOOGLE_API_KEY) if GOOGLE_API_KEY else None
 _HERE = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, static_folder=_HERE, static_url_path='')
 DB_PATH = os.path.join(_HERE, 'aosa.db')
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
+ADMIN_PASSWORD   = os.environ.get('ADMIN_PASSWORD', 'admin123')
+KITCHEN_PIN      = os.environ.get('KITCHEN_PIN', 'kitchen')   # separate PIN for kitchen screen
+GST_RATE_DEFAULT = float(os.environ.get('GST_RATE', '5'))     # 5% default (non-AC); set 18 for AC
 
 # ── PAYPAL CONFIG ──────────────────────────────
 PAYPAL_CLIENT_ID = os.environ.get('PAYPAL_CLIENT_ID', 'YOUR_PAYPAL_CLIENT_ID_HERE')
@@ -53,7 +55,7 @@ def get_paypal_token():
 @app.after_request
 def cors(r):
     r.headers['Access-Control-Allow-Origin'] = '*'
-    r.headers['Access-Control-Allow-Headers'] = 'Content-Type,X-Admin-Token'
+    r.headers['Access-Control-Allow-Headers'] = 'Content-Type,X-Admin-Token,X-Kitchen-Pin'
     r.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
     return r
 
@@ -84,7 +86,9 @@ def init_db():
     db.executescript("""
         CREATE TABLE IF NOT EXISTS venues (
             id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL,
-            description TEXT, address TEXT, created_at TEXT
+            description TEXT, address TEXT, created_at TEXT,
+            gst_rate REAL DEFAULT 5.0,
+            gstin TEXT DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS categories (
             id TEXT PRIMARY KEY, venue_id TEXT NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
@@ -101,7 +105,9 @@ def init_db():
             id TEXT PRIMARY KEY, venue_id TEXT NOT NULL, customer_name TEXT, table_ref TEXT,
             order_type TEXT NOT NULL, spice_level TEXT, dietary_pref TEXT DEFAULT '[]',
             portion_size TEXT, special_instructions TEXT, total_amount REAL DEFAULT 0,
-            status TEXT DEFAULT 'pending', created_at TEXT, hour_of_day INTEGER, day_of_week TEXT
+            status TEXT DEFAULT 'pending', kot_number INTEGER,
+            gst_rate REAL DEFAULT 5.0, gst_amount REAL DEFAULT 0,
+            created_at TEXT, hour_of_day INTEGER, day_of_week TEXT
         );
         CREATE TABLE IF NOT EXISTS order_items (
             id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
@@ -112,17 +118,110 @@ def init_db():
             id TEXT PRIMARY KEY, venue_id TEXT NOT NULL, session_id TEXT NOT NULL,
             role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS coupons (
+            id TEXT PRIMARY KEY, venue_id TEXT NOT NULL, code TEXT NOT NULL,
+            discount_type TEXT NOT NULL,
+            discount_value REAL NOT NULL,
+            min_order REAL DEFAULT 0,
+            max_discount REAL DEFAULT 0,
+            usage_limit INTEGER DEFAULT 0,
+            used_count INTEGER DEFAULT 0,
+            active INTEGER DEFAULT 1,
+            expires_at TEXT DEFAULT NULL,
+            created_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_coupon_code ON coupons(venue_id, code);
+
+        CREATE TABLE IF NOT EXISTS order_feedback (
+            id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+            venue_id TEXT NOT NULL, rating INTEGER NOT NULL,  -- 1-5
+            comment TEXT DEFAULT '', created_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_order ON order_feedback(order_id);
+
+        CREATE TABLE IF NOT EXISTS split_payments (
+            id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+            method TEXT NOT NULL,
+            amount REAL NOT NULL, created_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS tables (
             id TEXT PRIMARY KEY,
             venue_id TEXT NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
             label TEXT NOT NULL,
             sort_order INTEGER DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS inventory (
+            id TEXT PRIMARY KEY,
+            venue_id TEXT NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+            menu_item_id TEXT REFERENCES menu_items(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            unit TEXT DEFAULT 'units',
+            quantity REAL DEFAULT 0,
+            low_stock_threshold REAL DEFAULT 10,
+            cost_per_unit REAL DEFAULT 0,
+            updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS inventory_log (
+            id TEXT PRIMARY KEY,
+            inventory_id TEXT NOT NULL REFERENCES inventory(id) ON DELETE CASCADE,
+            change REAL NOT NULL,
+            reason TEXT DEFAULT '',
+            created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS customers (
+            id TEXT PRIMARY KEY,
+            venue_id TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            name TEXT DEFAULT '',
+            email TEXT DEFAULT '',
+            loyalty_points INTEGER DEFAULT 0,
+            total_spent REAL DEFAULT 0,
+            visit_count INTEGER DEFAULT 0,
+            created_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_phone ON customers(venue_id, phone);
+        CREATE TABLE IF NOT EXISTS loyalty_log (
+            id TEXT PRIMARY KEY,
+            customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+            order_id TEXT,
+            points INTEGER NOT NULL,
+            reason TEXT DEFAULT '',
+            created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS third_party_orders (
+            id TEXT PRIMARY KEY,
+            venue_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            platform_order_id TEXT NOT NULL,
+            raw_payload TEXT NOT NULL,
+            status TEXT DEFAULT 'received',
+            mapped_order_id TEXT,
+            created_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_order ON third_party_orders(platform, platform_order_id);
         CREATE INDEX IF NOT EXISTS idx_orders_venue ON orders(venue_id);
         CREATE INDEX IF NOT EXISTS idx_orders_hour  ON orders(hour_of_day);
         CREATE INDEX IF NOT EXISTS idx_items_venue  ON menu_items(venue_id);
         CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_messages(session_id);
     """)
+    db.commit()
+    # ── Safe migrations for existing databases ────────────
+    # TEXT columns need TEXT type; numeric ones need REAL
+    for col, dflt in [("kot_number","NULL"),("gst_rate","5.0"),("gst_amount","0"),("coupon_discount","0")]:
+        try: db.execute(f"ALTER TABLE orders ADD COLUMN {col} REAL DEFAULT {dflt}")
+        except Exception: pass
+    for col, dflt in [("coupon_code","NULL"),("payment_method","'cash'")]:
+        try: db.execute(f"ALTER TABLE orders ADD COLUMN {col} TEXT DEFAULT {dflt}")
+        except Exception: pass
+    for col, dflt in [("gst_rate","5.0"),("gstin","''")]:
+        try: db.execute(f"ALTER TABLE venues  ADD COLUMN {col} REAL DEFAULT {dflt}")
+        except Exception: pass
+    for col, dflt in [("loyalty_points_earned","0")]:
+        try: db.execute(f"ALTER TABLE orders ADD COLUMN {col} INTEGER DEFAULT {dflt}")
+        except Exception: pass
+    for col, dflt in [("customer_phone","NULL")]:
+        try: db.execute(f"ALTER TABLE orders ADD COLUMN {col} TEXT DEFAULT {dflt}")
+        except Exception: pass
     db.commit()
     if db.execute("SELECT COUNT(*) FROM venues").fetchone()[0] == 0:
         _seed(db)
@@ -661,8 +760,8 @@ def place_order(vid):
     if not data.get('order_type') or not data.get('items'):
         return jsonify({'error': 'order_type and items required'}), 400
     db = get_db()
-    if not db.execute("SELECT id FROM venues WHERE id=?", (vid,)).fetchone():
-        return jsonify({'error': 'Venue not found'}), 404
+    venue_row = db.execute("SELECT id, gst_rate FROM venues WHERE id=?", (vid,)).fetchone()
+    if not venue_row: return jsonify({'error': 'Venue not found'}), 404
 
     now = datetime.now()
     oid = str(uuid.uuid4())
@@ -679,22 +778,114 @@ def place_order(vid):
         total += float(row['price']) * qty
         order_items_list.append({'id': row['id'], 'name': row['name'], 'price': float(row['price']), 'qty': qty})
 
+    # -- Coupon validation --
+    coupon_code     = (data.get('coupon_code') or '').strip().upper()
+    coupon_discount = 0.0
+    coupon_row      = None
+    if coupon_code:
+        coupon_row = db.execute(
+            "SELECT * FROM coupons WHERE venue_id=? AND code=? AND active=1",
+            (vid, coupon_code)
+        ).fetchone()
+        if not coupon_row:
+            return jsonify({'error': 'Invalid or expired coupon code'}), 400
+        if coupon_row['min_order'] and total < float(coupon_row['min_order']):
+            return jsonify({'error': 'Minimum order requirement not met for this coupon'}), 400
+        if coupon_row['usage_limit'] and int(coupon_row['used_count']) >= int(coupon_row['usage_limit']):
+            return jsonify({'error': 'Coupon usage limit reached'}), 400
+        if coupon_row['expires_at'] and coupon_row['expires_at'] < now.strftime('%Y-%m-%d'):
+            return jsonify({'error': 'Coupon has expired'}), 400
+        if coupon_row['discount_type'] == 'percent':
+            coupon_discount = round(total * float(coupon_row['discount_value']) / 100, 2)
+            if coupon_row['max_discount'] and coupon_discount > float(coupon_row['max_discount']):
+                coupon_discount = float(coupon_row['max_discount'])
+        else:
+            coupon_discount = min(float(coupon_row['discount_value']), total)
+        coupon_discount = round(coupon_discount, 2)
+
+    total_after = round(total - coupon_discount, 2)
+
+    # -- KOT number --
+    kot_num = (db.execute(
+        "SELECT COALESCE(MAX(kot_number),0)+1 FROM orders WHERE venue_id=? AND DATE(created_at)=DATE('now','localtime')",
+        (vid,)
+    ).fetchone()[0])
+
+    gst_rate   = float(venue_row['gst_rate'] or GST_RATE_DEFAULT)
+    base_amt   = round(total_after / (1 + gst_rate/100), 2)
+    gst_amount = round(total_after - base_amt, 2)
+    payment_method = data.get('payment_method', 'cash')
+
     db.execute("""INSERT INTO orders
         (id,venue_id,customer_name,table_ref,order_type,spice_level,dietary_pref,
-         portion_size,special_instructions,total_amount,status,created_at,hour_of_day,day_of_week)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         portion_size,special_instructions,total_amount,status,kot_number,
+         gst_rate,gst_amount,coupon_code,coupon_discount,payment_method,
+         created_at,hour_of_day,day_of_week)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (oid, vid, data.get('customer_name','Guest'), data.get('table_ref',''),
          data['order_type'], data.get('spice_level','medium'), json.dumps(dietary),
          data.get('portion_size','regular'), data.get('special_instructions',''),
-         round(total,2), 'pending', now.strftime('%Y-%m-%d %H:%M:%S'), now.hour, now.strftime('%a')))
+         total_after, 'pending', kot_num, gst_rate, gst_amount,
+         coupon_code or None, coupon_discount, payment_method,
+         now.strftime('%Y-%m-%d %H:%M:%S'), now.hour, now.strftime('%a')))
 
     for it in order_items_list:
         db.execute("INSERT INTO order_items (id,order_id,menu_item_id,name,price,quantity) VALUES (?,?,?,?,?,?)",
                    (str(uuid.uuid4()), oid, it['id'], it['name'], it['price'], it['qty']))
+
+    # -- Split payments --
+    splits = data.get('split_payments') or []
+    if splits:
+        for sp in splits:
+            db.execute("INSERT INTO split_payments (id,order_id,method,amount,created_at) VALUES (?,?,?,?,?)",
+                       (str(uuid.uuid4()), oid, sp.get('method','cash'),
+                        float(sp.get('amount',0)), now.strftime('%Y-%m-%d %H:%M:%S')))
+    else:
+        db.execute("INSERT INTO split_payments (id,order_id,method,amount,created_at) VALUES (?,?,?,?,?)",
+                   (str(uuid.uuid4()), oid, payment_method, total_after,
+                    now.strftime('%Y-%m-%d %H:%M:%S')))
+
+    if coupon_row:
+        db.execute("UPDATE coupons SET used_count=used_count+1 WHERE id=?", (coupon_row['id'],))
+
+    # ── Loyalty points (1 point per ₹10 spent) ──
+    customer_phone = (data.get('customer_phone') or '').strip()
+    loyalty_earned = 0
+    if customer_phone:
+        loyalty_earned = int(total_after // 10)
+        cust = db.execute("SELECT id FROM customers WHERE venue_id=? AND phone=?", (vid, customer_phone)).fetchone()
+        if cust:
+            db.execute(
+                "UPDATE customers SET loyalty_points=loyalty_points+?, total_spent=total_spent+?, "
+                "visit_count=visit_count+? WHERE id=?",
+                (loyalty_earned, total_after, 1, cust['id'])
+            )
+            if loyalty_earned:
+                db.execute("INSERT INTO loyalty_log (id,customer_id,order_id,points,reason,created_at) VALUES (?,?,?,?,?,?)",
+                           (str(uuid.uuid4()), cust['id'], oid, loyalty_earned, 'order', now_str()))
+        else:
+            new_cid = str(uuid.uuid4())
+            db.execute(
+                "INSERT INTO customers (id,venue_id,phone,name,loyalty_points,total_spent,visit_count,created_at) "
+                "VALUES (?,?,?,?,?,?,1,?)",
+                (new_cid, vid, customer_phone, data.get('customer_name','Guest'),
+                 loyalty_earned, total_after, now_str())
+            )
+            if loyalty_earned:
+                db.execute("INSERT INTO loyalty_log (id,customer_id,order_id,points,reason,created_at) VALUES (?,?,?,?,?,?)",
+                           (str(uuid.uuid4()), new_cid, oid, loyalty_earned, 'order', now_str()))
+        # tag order with phone + points
+        db.execute("UPDATE orders SET customer_phone=?, loyalty_points_earned=? WHERE id=?",
+                   (customer_phone, loyalty_earned, oid))
+
     db.commit()
 
-    return jsonify({'order_id': oid, 'total': round(total,2), 'status': 'pending',
-                    'message': f"Order #{oid[:8].upper()} placed! We're on it ☕"}), 201
+    msg = "Order placed! We\'re on it"
+    if coupon_discount:
+        msg = f"Order placed! Saved Rs.{coupon_discount:.0f} with coupon"
+    return jsonify({'order_id': oid, 'total': total_after, 'original_total': round(total,2),
+                    'coupon_discount': coupon_discount, 'kot_number': kot_num,
+                    'status': 'pending', 'message': msg}), 201
 
 # ═══════════════════════════════════════════════
 # ADMIN ROUTES
@@ -819,6 +1010,92 @@ def admin_delete_item(iid):
     if err: return err
     get_db().execute("DELETE FROM menu_items WHERE id=?", (iid,))
     get_db().commit()
+    return jsonify({'ok': True})
+
+# ── KITCHEN ROUTES (kitchen PIN, not admin token) ─────────
+def require_kitchen():
+    pin = request.headers.get('X-Kitchen-Pin') or request.args.get('pin')
+    if pin not in (KITCHEN_PIN, ADMIN_PASSWORD):   # admin can also access kitchen
+        return jsonify({'error': 'Invalid kitchen PIN'}), 401
+    return None
+
+@app.route('/api/kitchen/<vid>/orders', methods=['GET'])
+def kitchen_orders(vid):
+    """Live feed for Kitchen Display Screen — no admin needed, just kitchen PIN."""
+    err = require_kitchen()
+    if err: return err
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM orders WHERE venue_id=? AND status IN ('pending','preparing') "
+        "ORDER BY created_at ASC",
+        (vid,)
+    ).fetchall()
+    result = []
+    for r in rows:
+        o = dict(r)
+        o['dietary_pref'] = json.loads(o.get('dietary_pref') or '[]')
+        o['items'] = [dict(i) for i in db.execute(
+            "SELECT name,price,quantity FROM order_items WHERE order_id=?", (r['id'],)
+        ).fetchall()]
+        result.append(o)
+    return jsonify(result)
+
+@app.route('/api/kitchen/orders/<oid>/status', methods=['PUT'])
+def kitchen_update_status(oid):
+    """Kitchen staff marks order preparing → ready."""
+    err = require_kitchen()
+    if err: return err
+    data = request.json or {}
+    new_status = data.get('status')
+    if new_status not in ('preparing', 'ready', 'served'):
+        return jsonify({'error': 'Invalid status'}), 400
+    get_db().execute("UPDATE orders SET status=? WHERE id=?", (new_status, oid))
+    get_db().commit()
+    return jsonify({'ok': True, 'status': new_status})
+
+@app.route('/api/venues/<vid>/orders/<oid>/bill', methods=['GET'])
+def get_bill(vid, oid):
+    """Generate GST bill for a specific order."""
+    db = get_db()
+    order = db.execute("SELECT * FROM orders WHERE id=? AND venue_id=?", (oid, vid)).fetchone()
+    if not order: return jsonify({'error': 'Order not found'}), 404
+    venue  = db.execute("SELECT name,address,gstin,gst_rate FROM venues WHERE id=?", (vid,)).fetchone()
+    items  = db.execute("SELECT name,price,quantity FROM order_items WHERE order_id=?", (oid,)).fetchall()
+    o = dict(order)
+    o['dietary_pref'] = json.loads(o.get('dietary_pref') or '[]')
+    o['items'] = [dict(i) for i in items]
+
+    gst_rate   = float(o.get('gst_rate') or GST_RATE_DEFAULT)
+    total      = float(o['total_amount'])
+    base_amt   = round(total / (1 + gst_rate/100), 2)
+    gst_amount = round(total - base_amt, 2)
+    cgst       = round(gst_amount / 2, 2)
+    sgst       = round(gst_amount / 2, 2)
+
+    return jsonify({
+        'order':      o,
+        'venue':      dict(venue),
+        'bill': {
+            'subtotal':   base_amt,
+            'gst_rate':   gst_rate,
+            'cgst':       cgst,
+            'sgst':       sgst,
+            'gst_amount': gst_amount,
+            'total':      total,
+            'kot_number': o.get('kot_number'),
+        }
+    })
+
+@app.route('/api/admin/venues/<vid>/settings', methods=['PUT'])
+def update_venue_settings(vid):
+    """Update GST rate and GSTIN for a venue."""
+    err = require_admin()
+    if err: return err
+    data = request.json or {}
+    db = get_db()
+    db.execute("UPDATE venues SET gst_rate=?, gstin=? WHERE id=?",
+               (float(data.get('gst_rate', GST_RATE_DEFAULT)), data.get('gstin',''), vid))
+    db.commit()
     return jsonify({'ok': True})
 
 # ── TABLE MANAGEMENT ──────────────────────────
@@ -963,6 +1240,419 @@ def analytics(vid):
         'order_types': [dict(r) for r in otype],
         'dietary_prefs': sorted(diet_counts.items(), key=lambda x: -x[1]),
     })
+
+# ── COUPON ROUTES ──────────────────────────────
+@app.route('/api/venues/<vid>/coupon/validate', methods=['POST'])
+def validate_coupon(vid):
+    """Customer-facing: check coupon before placing order."""
+    data = request.json or {}
+    code  = (data.get('code') or '').strip().upper()
+    total = float(data.get('total', 0))
+    if not code:
+        return jsonify({'error': 'code required'}), 400
+    db  = get_db()
+    row = db.execute("SELECT * FROM coupons WHERE venue_id=? AND code=? AND active=1", (vid, code)).fetchone()
+    if not row:
+        return jsonify({'valid': False, 'error': 'Invalid or expired coupon'}), 404
+    now = datetime.now()
+    if row['expires_at'] and row['expires_at'] < now.strftime('%Y-%m-%d'):
+        return jsonify({'valid': False, 'error': 'Coupon has expired'}), 400
+    if row['usage_limit'] and int(row['used_count']) >= int(row['usage_limit']):
+        return jsonify({'valid': False, 'error': 'Usage limit reached'}), 400
+    if row['min_order'] and total < float(row['min_order']):
+        return jsonify({'valid': False, 'error': f"Min order Rs.{row['min_order']:.0f} required"}), 400
+    # Calculate preview discount
+    if row['discount_type'] == 'percent':
+        disc = round(total * float(row['discount_value']) / 100, 2)
+        if row['max_discount'] and disc > float(row['max_discount']):
+            disc = float(row['max_discount'])
+    else:
+        disc = min(float(row['discount_value']), total)
+    return jsonify({'valid': True, 'discount': round(disc, 2),
+                    'type': row['discount_type'], 'value': row['discount_value'],
+                    'description': f"{int(row['discount_value'])}{'%' if row['discount_type']=='percent' else ' Rs.'} off"})
+
+@app.route('/api/admin/venues/<vid>/coupons', methods=['GET'])
+def list_coupons(vid):
+    err = require_admin()
+    if err: return err
+    rows = get_db().execute("SELECT * FROM coupons WHERE venue_id=? ORDER BY created_at DESC", (vid,)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/admin/venues/<vid>/coupons', methods=['POST'])
+def create_coupon(vid):
+    err = require_admin()
+    if err: return err
+    data = request.json or {}
+    code = (data.get('code') or '').strip().upper()
+    if not code or not data.get('discount_type') or data.get('discount_value') is None:
+        return jsonify({'error': 'code, discount_type, discount_value required'}), 400
+    cid = str(uuid.uuid4())
+    try:
+        db2 = get_db()
+        db2.execute(
+            "INSERT INTO coupons (id,venue_id,code,discount_type,discount_value,"
+            "min_order,max_discount,usage_limit,used_count,active,expires_at,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,0,1,?,?)",
+            (cid, vid, code, data['discount_type'], float(data['discount_value']),
+             float(data.get('min_order') or 0), float(data.get('max_discount') or 0),
+             int(data.get('usage_limit') or 0), data.get('expires_at') or None, now_str())
+        )
+        db2.commit()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify({'id': cid, 'code': code}), 201
+
+@app.route('/api/admin/coupons/<cid>', methods=['PUT'])
+def update_coupon(cid):
+    err = require_admin()
+    if err: return err
+    data = request.json or {}
+    db = get_db()
+    db.execute("UPDATE coupons SET active=?,expires_at=?,usage_limit=?,max_discount=? WHERE id=?",
+               (int(data.get('active',1)), data.get('expires_at'), int(data.get('usage_limit',0)),
+                float(data.get('max_discount',0)), cid))
+    db.commit()
+    return jsonify({'ok': True})
+
+@app.route('/api/admin/coupons/<cid>', methods=['DELETE'])
+def delete_coupon(cid):
+    err = require_admin()
+    if err: return err
+    db = get_db()
+    db.execute("DELETE FROM coupons WHERE id=?", (cid,))
+    db.commit()
+    return jsonify({'ok': True})
+
+# ── FEEDBACK ROUTES ────────────────────────────
+@app.route('/api/venues/<vid>/orders/<oid>/feedback', methods=['POST'])
+def submit_feedback(vid, oid):
+    """Customer submits star rating + optional comment after order."""
+    data = request.json or {}
+    rating = int(data.get('rating', 0))
+    if not (1 <= rating <= 5):
+        return jsonify({'error': 'rating must be 1-5'}), 400
+    order = get_db().execute("SELECT id FROM orders WHERE id=? AND venue_id=?", (oid, vid)).fetchone()
+    if not order:
+        return jsonify({'error': 'Order not found'}), 404
+    try:
+        fid = str(uuid.uuid4())
+        get_db().execute(
+            "INSERT INTO order_feedback (id,order_id,venue_id,rating,comment,created_at) VALUES (?,?,?,?,?,?)",
+            (fid, oid, vid, rating, data.get('comment',''), now_str())
+        )
+        get_db().commit()
+    except Exception:
+        return jsonify({'error': 'Feedback already submitted for this order'}), 409
+    return jsonify({'ok': True, 'id': fid}), 201
+
+@app.route('/api/admin/venues/<vid>/feedback', methods=['GET'])
+def admin_feedback(vid):
+    err = require_admin()
+    if err: return err
+    db = get_db()
+    rows = db.execute(
+        "SELECT f.*, o.customer_name, o.table_ref, o.created_at AS order_time "
+        "FROM order_feedback f JOIN orders o ON f.order_id=o.id "
+        "WHERE f.venue_id=? ORDER BY f.created_at DESC LIMIT 200",
+        (vid,)
+    ).fetchall()
+    avg = db.execute("SELECT AVG(rating), COUNT(*) FROM order_feedback WHERE venue_id=?", (vid,)).fetchone()
+    return jsonify({
+        'reviews': [dict(r) for r in rows],
+        'average_rating': round(avg[0], 2) if avg[0] else None,
+        'total_reviews': avg[1]
+    })
+
+# ═══════════════════════════════════════════════
+# PHASE 3 — INVENTORY, CRM/LOYALTY, WEBHOOKS
+# ═══════════════════════════════════════════════
+
+# ── INVENTORY ROUTES ───────────────────────────
+@app.route('/api/admin/venues/<vid>/inventory', methods=['GET'])
+def list_inventory(vid):
+    err = require_admin()
+    if err: return err
+    rows = get_db().execute(
+        "SELECT i.*, m.name AS item_name FROM inventory i "
+        "LEFT JOIN menu_items m ON i.menu_item_id=m.id "
+        "WHERE i.venue_id=? ORDER BY i.name",
+        (vid,)
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/admin/venues/<vid>/inventory', methods=['POST'])
+def create_inventory(vid):
+    err = require_admin()
+    if err: return err
+    data = request.json or {}
+    if not data.get('name'):
+        return jsonify({'error': 'name required'}), 400
+    iid = str(uuid.uuid4())
+    get_db().execute(
+        "INSERT INTO inventory (id,venue_id,menu_item_id,name,unit,quantity,low_stock_threshold,cost_per_unit,updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (iid, vid, data.get('menu_item_id'), data['name'],
+         data.get('unit','units'), float(data.get('quantity',0)),
+         float(data.get('low_stock_threshold',10)),
+         float(data.get('cost_per_unit',0)), now_str())
+    )
+    get_db().commit()
+    return jsonify({'id': iid}), 201
+
+@app.route('/api/admin/inventory/<iid>', methods=['PUT'])
+def update_inventory(iid):
+    err = require_admin()
+    if err: return err
+    data = request.json or {}
+    db = get_db()
+    row = db.execute("SELECT * FROM inventory WHERE id=?", (iid,)).fetchone()
+    if not row: return jsonify({'error': 'Not found'}), 404
+    change = float(data.get('change', 0))   # positive = restock, negative = usage
+    new_qty = float(row['quantity']) + change
+    db.execute(
+        "UPDATE inventory SET quantity=?,low_stock_threshold=?,cost_per_unit=?,updated_at=? WHERE id=?",
+        (new_qty,
+         float(data.get('low_stock_threshold', row['low_stock_threshold'])),
+         float(data.get('cost_per_unit', row['cost_per_unit'])),
+         now_str(), iid)
+    )
+    if change != 0:
+        db.execute(
+            "INSERT INTO inventory_log (id,inventory_id,change,reason,created_at) VALUES (?,?,?,?,?)",
+            (str(uuid.uuid4()), iid, change, data.get('reason','manual'), now_str())
+        )
+    db.commit()
+    return jsonify({'quantity': new_qty})
+
+@app.route('/api/admin/inventory/<iid>', methods=['DELETE'])
+def delete_inventory(iid):
+    err = require_admin()
+    if err: return err
+    get_db().execute("DELETE FROM inventory WHERE id=?", (iid,))
+    get_db().commit()
+    return jsonify({'ok': True})
+
+@app.route('/api/admin/venues/<vid>/inventory/low', methods=['GET'])
+def low_stock(vid):
+    """Items at or below their low_stock_threshold."""
+    err = require_admin()
+    if err: return err
+    rows = get_db().execute(
+        "SELECT * FROM inventory WHERE venue_id=? AND quantity <= low_stock_threshold ORDER BY quantity",
+        (vid,)
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+# ── CRM / LOYALTY ROUTES ───────────────────────
+@app.route('/api/admin/venues/<vid>/customers', methods=['GET'])
+def list_customers(vid):
+    err = require_admin()
+    if err: return err
+    q = request.args.get('q','').strip()
+    db = get_db()
+    if q:
+        rows = db.execute(
+            "SELECT * FROM customers WHERE venue_id=? AND (phone LIKE ? OR name LIKE ?) ORDER BY total_spent DESC LIMIT 100",
+            (vid, f'%{q}%', f'%{q}%')
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT * FROM customers WHERE venue_id=? ORDER BY total_spent DESC LIMIT 200",
+            (vid,)
+        ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/admin/customers/<cid>', methods=['GET'])
+def get_customer(cid):
+    err = require_admin()
+    if err: return err
+    db = get_db()
+    cust = db.execute("SELECT * FROM customers WHERE id=?", (cid,)).fetchone()
+    if not cust: return jsonify({'error': 'Not found'}), 404
+    orders = db.execute(
+        "SELECT id, total_amount, status, created_at, coupon_code, loyalty_points_earned "
+        "FROM orders WHERE customer_phone=? AND venue_id=? ORDER BY created_at DESC LIMIT 20",
+        (cust['phone'], cust['venue_id'])
+    ).fetchall()
+    log = db.execute(
+        "SELECT points, reason, created_at FROM loyalty_log WHERE customer_id=? ORDER BY created_at DESC LIMIT 30",
+        (cid,)
+    ).fetchall()
+    return jsonify({**dict(cust), 'orders': [dict(o) for o in orders], 'loyalty_log': [dict(l) for l in log]})
+
+@app.route('/api/admin/customers/<cid>/loyalty', methods=['POST'])
+def adjust_loyalty(cid):
+    """Manually adjust loyalty points (e.g. redemption or bonus)."""
+    err = require_admin()
+    if err: return err
+    data = request.json or {}
+    points = int(data.get('points', 0))
+    reason = data.get('reason', 'manual adjustment')
+    db = get_db()
+    db.execute("UPDATE customers SET loyalty_points=MAX(0, loyalty_points+?) WHERE id=?", (points, cid))
+    db.execute("INSERT INTO loyalty_log (id,customer_id,points,reason,created_at) VALUES (?,?,?,?,?)",
+               (str(uuid.uuid4()), cid, points, reason, now_str()))
+    db.commit()
+    new_pts = db.execute("SELECT loyalty_points FROM customers WHERE id=?", (cid,)).fetchone()['loyalty_points']
+    return jsonify({'loyalty_points': new_pts})
+
+@app.route('/api/venues/<vid>/customer', methods=['GET'])
+def lookup_customer(vid):
+    """Customer looks up their own points by phone (no auth needed)."""
+    phone = request.args.get('phone','').strip()
+    if not phone:
+        return jsonify({'error': 'phone required'}), 400
+    cust = get_db().execute(
+        "SELECT name, phone, loyalty_points, total_spent, visit_count FROM customers WHERE venue_id=? AND phone=?",
+        (vid, phone)
+    ).fetchone()
+    if not cust:
+        return jsonify({'found': False, 'loyalty_points': 0})
+    return jsonify({'found': True, **dict(cust)})
+
+# ── ZOMATO / SWIGGY WEBHOOK ROUTES ─────────────
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'aosa_webhook_2025')
+
+def _verify_webhook(req):
+    secret = req.headers.get('X-Webhook-Secret') or req.args.get('secret')
+    return secret == WEBHOOK_SECRET
+
+def _map_platform_order(db, vid, platform, payload):
+    """Parse Zomato/Swiggy payload → internal order format and create order."""
+    # Zomato payload shape: {order_id, items:[{name,quantity,price}], total, customer:{name,phone}, address}
+    # Swiggy payload shape: {order_id, order_items:[{name,quantity,price}], order_total, delivery_address, customer_name}
+    items_raw = payload.get('items') or payload.get('order_items') or []
+    total_raw = float(payload.get('total') or payload.get('order_total') or 0)
+    cust_name = (payload.get('customer', {}).get('name') if isinstance(payload.get('customer'), dict)
+                 else payload.get('customer_name') or 'Delivery Customer')
+    cust_phone = (payload.get('customer', {}).get('phone') if isinstance(payload.get('customer'), dict)
+                  else payload.get('customer_phone') or '')
+
+    # Try to match items to menu
+    matched_items = []
+    unmatched = []
+    for raw in items_raw:
+        name = raw.get('name','')
+        qty  = int(raw.get('quantity', 1))
+        price = float(raw.get('price', 0))
+        row = db.execute(
+            "SELECT id, price FROM menu_items WHERE venue_id=? AND LOWER(name) LIKE ? AND is_available=1 LIMIT 1",
+            (vid, f'%{name.lower()}%')
+        ).fetchone()
+        if row:
+            matched_items.append({'id': row['id'], 'price': row['price'], 'qty': qty, 'name': name})
+        else:
+            unmatched.append({'name': name, 'qty': qty, 'price': price})
+
+    oid = str(uuid.uuid4())
+    now = datetime.now()
+    venue_row = db.execute("SELECT gst_rate FROM venues WHERE id=?", (vid,)).fetchone()
+    gst_rate = float(venue_row['gst_rate'] if venue_row else GST_RATE_DEFAULT)
+    base_amt = round(total_raw / (1 + gst_rate/100), 2)
+    gst_amount = round(total_raw - base_amt, 2)
+    kot_num = (db.execute(
+        "SELECT COALESCE(MAX(kot_number),0)+1 FROM orders WHERE venue_id=? AND DATE(created_at)=DATE('now','localtime')",
+        (vid,)
+    ).fetchone()[0])
+
+    db.execute("""INSERT INTO orders
+        (id,venue_id,customer_name,order_type,total_amount,status,kot_number,
+         gst_rate,gst_amount,payment_method,created_at,hour_of_day,day_of_week)
+        VALUES (?,?,?,'delivery',?,?,?,?,?,'prepaid',?,?,?)""",
+        (oid, vid, cust_name, total_raw, 'pending', kot_num,
+         gst_rate, gst_amount,
+         now.strftime('%Y-%m-%d %H:%M:%S'), now.hour, now.strftime('%a')))
+
+    for it in matched_items:
+        db.execute("INSERT INTO order_items (id,order_id,menu_item_id,name,price,quantity) VALUES (?,?,?,?,?,?)",
+                   (str(uuid.uuid4()), oid, it['id'], it['name'], it['price'], it['qty']))
+    # Unmatched items still stored as order_items with null menu_item_id-ish
+    for it in unmatched:
+        db.execute("INSERT INTO order_items (id,order_id,menu_item_id,name,price,quantity) VALUES (?,?,NULL,?,?,?)",
+                   (str(uuid.uuid4()), oid, it['name'], it['price'], it['qty']))
+
+    # Loyalty points for phone
+    if cust_phone:
+        loyalty_earned = int(total_raw // 10)
+        cust = db.execute("SELECT id FROM customers WHERE venue_id=? AND phone=?", (vid, cust_phone)).fetchone()
+        if cust:
+            db.execute("UPDATE customers SET loyalty_points=loyalty_points+?,total_spent=total_spent+?,visit_count=visit_count+1 WHERE id=?",
+                       (loyalty_earned, total_raw, cust['id']))
+        else:
+            new_cid = str(uuid.uuid4())
+            db.execute("INSERT INTO customers (id,venue_id,phone,name,loyalty_points,total_spent,visit_count,created_at) VALUES (?,?,?,?,?,?,1,?)",
+                       (new_cid, vid, cust_phone, cust_name, loyalty_earned, total_raw, now_str()))
+
+    return oid, unmatched
+
+@app.route('/api/webhook/<vid>/zomato', methods=['POST'])
+def webhook_zomato(vid):
+    if not _verify_webhook(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    payload = request.json or {}
+    platform_oid = str(payload.get('order_id', ''))
+    if not platform_oid:
+        return jsonify({'error': 'order_id required'}), 400
+    db = get_db()
+    # Idempotency check
+    existing = db.execute("SELECT id FROM third_party_orders WHERE platform='zomato' AND platform_order_id=?",
+                          (platform_oid,)).fetchone()
+    if existing:
+        return jsonify({'ok': True, 'duplicate': True}), 200
+    tpid = str(uuid.uuid4())
+    try:
+        oid, unmatched = _map_platform_order(db, vid, 'zomato', payload)
+        db.execute("INSERT INTO third_party_orders (id,venue_id,platform,platform_order_id,raw_payload,status,mapped_order_id,created_at) "
+                   "VALUES (?,?,?,?,?,?,?,?)",
+                   (tpid, vid, 'zomato', platform_oid, json.dumps(payload), 'mapped', oid, now_str()))
+        db.commit()
+        return jsonify({'ok': True, 'order_id': oid, 'unmatched_items': unmatched}), 201
+    except Exception as e:
+        db.execute("INSERT INTO third_party_orders (id,venue_id,platform,platform_order_id,raw_payload,status,created_at) "
+                   "VALUES (?,?,?,?,?,?,?)",
+                   (tpid, vid, 'zomato', platform_oid, json.dumps(payload), 'error', now_str()))
+        db.commit()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/webhook/<vid>/swiggy', methods=['POST'])
+def webhook_swiggy(vid):
+    if not _verify_webhook(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    payload = request.json or {}
+    platform_oid = str(payload.get('order_id',''))
+    if not platform_oid:
+        return jsonify({'error': 'order_id required'}), 400
+    db = get_db()
+    existing = db.execute("SELECT id FROM third_party_orders WHERE platform='swiggy' AND platform_order_id=?",
+                          (platform_oid,)).fetchone()
+    if existing:
+        return jsonify({'ok': True, 'duplicate': True}), 200
+    tpid = str(uuid.uuid4())
+    try:
+        oid, unmatched = _map_platform_order(db, vid, 'swiggy', payload)
+        db.execute("INSERT INTO third_party_orders (id,venue_id,platform,platform_order_id,raw_payload,status,mapped_order_id,created_at) "
+                   "VALUES (?,?,?,?,?,?,?,?)",
+                   (tpid, vid, 'swiggy', platform_oid, json.dumps(payload), 'mapped', oid, now_str()))
+        db.commit()
+        return jsonify({'ok': True, 'order_id': oid, 'unmatched_items': unmatched}), 201
+    except Exception as e:
+        db.execute("INSERT INTO third_party_orders (id,venue_id,platform,platform_order_id,raw_payload,status,created_at) "
+                   "VALUES (?,?,?,?,?,?,?)",
+                   (tpid, vid, 'swiggy', platform_oid, json.dumps(payload), 'error', now_str()))
+        db.commit()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/venues/<vid>/third-party-orders', methods=['GET'])
+def list_third_party(vid):
+    err = require_admin()
+    if err: return err
+    rows = get_db().execute(
+        "SELECT id,platform,platform_order_id,status,mapped_order_id,created_at FROM third_party_orders "
+        "WHERE venue_id=? ORDER BY created_at DESC LIMIT 100",
+        (vid,)
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
 
 # ── PAYPAL ROUTES ──────────────────────────────
 

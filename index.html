@@ -473,6 +473,15 @@ function MenuPage({venue, cart, toast, onBack, directTable}) {
   const [orderResult, setOrderResult] = useState(null);
   const [prefs, setPrefs] = useState({customer_name:'', order_type:'dine-in', spice_level:'medium', portion_size:'regular', dietary_pref:[], special_instructions:'', table_ref: directTable || ''});
   const [placing, setPlacing] = useState(false);
+  const [couponCode, setCouponCode]   = useState('');
+  const [couponData, setCouponData]   = useState(null);  // {valid, discount, description}
+  const [couponChecking, setCouponChecking] = useState(false);
+  const [splitMode, setSplitMode]     = useState(false);
+  const [splits, setSplits]           = useState([{method:'cash', amount:''}]);
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [feedbackRating, setFeedbackRating] = useState(0);
+  const [feedbackComment, setFeedbackComment] = useState('');
+  const [feedbackDone, setFeedbackDone] = useState(false);
   const sectionRefs = useRef({});
 
   // Bestseller & recommended item sets (by name)
@@ -491,18 +500,54 @@ function MenuPage({venue, cart, toast, onBack, directTable}) {
 
   const placeOrder = async(paypalOrderId=null) => {
     if (!cart.items.length) return;
+    // Validate split amounts if in split mode
+    if (splitMode) {
+      const splitTotal = splits.reduce((s,sp)=>s+parseFloat(sp.amount||0),0);
+      const due = couponData ? cart.total - couponData.discount : cart.total;
+      if (Math.abs(splitTotal - due) > 0.5)
+        return toast(`Split amounts must add up to ₹${due.toFixed(0)}`);
+    }
     setPlacing(true);
     try {
-      const res = await api(`/venues/${venue.id}/orders`, {method:'POST', body:JSON.stringify({
-        ...prefs, items: cart.items.map(i=>({id:i.id, quantity:i.quantity})),
-        ...(paypalOrderId ? {paypal_order_id: paypalOrderId} : {})
-      })});
+      const body = {
+        ...prefs,
+        items: cart.items.map(i=>({id:i.id, quantity:i.quantity})),
+        ...(paypalOrderId ? {paypal_order_id: paypalOrderId} : {}),
+        ...(couponCode ? {coupon_code: couponCode} : {}),
+        payment_method: splitMode ? 'split' : (paypalOrderId ? 'paypal' : prefs.payment_method || 'cash'),
+        ...(splitMode ? {split_payments: splits.map(s=>({method:s.method,amount:parseFloat(s.amount||0)}))} : {}),
+      };
+      const res = await api(`/venues/${venue.id}/orders`, {method:'POST', body:JSON.stringify(body)});
       cart.clear();
       setOrderResult(res);
       setView('success');
-      toast('Order placed successfully!');
+      toast(res.message || 'Order placed!');
+      setTimeout(()=>setShowFeedback(true), 2500);
     } catch(e) { toast(e.message); }
     setPlacing(false);
+  };
+
+  const checkCoupon = async() => {
+    if (!couponCode.trim()) return;
+    setCouponChecking(true);
+    try {
+      const res = await api(`/venues/${venue.id}/coupon/validate`, {
+        method:'POST', body:JSON.stringify({code: couponCode.trim(), total: cart.total})
+      });
+      if (res.valid) { setCouponData(res); toast(`Coupon applied! -${res.description}`); }
+      else { setCouponData(null); toast(res.error || 'Invalid coupon'); }
+    } catch(e) { setCouponData(null); toast(e.message); }
+    setCouponChecking(false);
+  };
+
+  const submitFeedback = async() => {
+    if (!feedbackRating || !orderResult?.order_id) return;
+    try {
+      await api(`/venues/${venue.id}/orders/${orderResult.order_id}/feedback`, {
+        method:'POST', body: JSON.stringify({rating: feedbackRating, comment: feedbackComment})
+      });
+      setFeedbackDone(true);
+    } catch(e) { setFeedbackDone(true); } // silently succeed even if dup
   };
 
   const handlePayPal = async() => {
@@ -557,10 +602,69 @@ function MenuPage({venue, cart, toast, onBack, directTable}) {
           <div className="os-title">Order Placed</div>
           <p className="os-sub">Your order is being prepared with care.<br/>Thank you for choosing aosa.</p>
           <div className="os-id">#{orderResult?.order_id?.slice(0,8).toUpperCase()}</div>
-          <p style={{fontSize:'0.82rem',color:'var(--gray)',marginTop:8}}>Total: <strong>₹{orderResult?.total?.toFixed(0)}</strong></p>
+          <p style={{fontSize:'0.82rem',color:'var(--gray)',marginTop:8}}>
+            Total: <strong>₹{orderResult?.total?.toFixed(0)}</strong>
+            {orderResult?.coupon_discount > 0 && (
+              <span style={{color:'#166534',marginLeft:8}}>
+                (saved ₹{orderResult.coupon_discount.toFixed(0)})
+              </span>
+            )}
+          </p>
+          {prefs.customer_phone && (
+            <p style={{fontSize:'0.75rem',color:'#1d4ed8',marginTop:4}}>
+              +{Math.floor((orderResult?.total||0)/10)} loyalty points earned 🎯
+            </p>
+          )}
           <button className="os-btn" onClick={()=>{setView('browse');onBack();}}>Order Again</button>
         </div>
       </div>
+
+      {/* ── Feedback modal ── */}
+      {showFeedback && !feedbackDone && (
+        <div className="modal-bg">
+          <div className="modal-box" style={{maxWidth:360,textAlign:'center',padding:'28px 24px'}}>
+            <div style={{fontSize:'1.5rem',marginBottom:6}}>How was your experience?</div>
+            <p style={{fontSize:'0.75rem',color:'var(--gray)',marginBottom:16}}>
+              Your feedback helps us improve every cup.
+            </p>
+            {/* Stars */}
+            <div style={{display:'flex',justifyContent:'center',gap:10,marginBottom:14}}>
+              {[1,2,3,4,5].map(s=>(
+                <span key={s} style={{
+                  fontSize:'2rem',cursor:'pointer',
+                  color: s<=feedbackRating ? '#f59e0b' : '#ddd',
+                  transition:'transform .1s',
+                }} onClick={()=>setFeedbackRating(s)}
+                  onMouseEnter={e=>e.target.style.transform='scale(1.2)'}
+                  onMouseLeave={e=>e.target.style.transform='scale(1)'}
+                >★</span>
+              ))}
+            </div>
+            <textarea className="of-textarea" style={{marginBottom:12,fontSize:'0.75rem'}}
+              rows={3} placeholder="Optional comment…"
+              value={feedbackComment} onChange={e=>setFeedbackComment(e.target.value)}/>
+            <div style={{display:'flex',gap:8,justifyContent:'center'}}>
+              <button className="btn btn-ghost" onClick={()=>setShowFeedback(false)}>Skip</button>
+              <button className="btn btn-black" disabled={!feedbackRating} onClick={submitFeedback}>
+                Submit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showFeedback && feedbackDone && (
+        <div className="modal-bg" onClick={()=>setShowFeedback(false)}>
+          <div className="modal-box" style={{maxWidth:280,textAlign:'center',padding:'28px 24px'}}>
+            <div style={{fontSize:'2rem',marginBottom:8}}>🙏</div>
+            <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:'1.3rem'}}>
+              Thank you!
+            </div>
+            <p style={{fontSize:'0.75rem',color:'var(--gray)',marginTop:8}}>
+              Your feedback makes aosa better.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -717,11 +821,106 @@ function MenuPage({venue, cart, toast, onBack, directTable}) {
                 <label className="of-label">Special Instructions</label>
                 <textarea className="of-textarea" value={prefs.special_instructions} onChange={e=>setPrefs({...prefs,special_instructions:e.target.value})} placeholder="Allergies, preferences…"/>
               </div>
+              <div>
+                <label className="of-label">Phone (optional — earn loyalty points)</label>
+                <div style={{display:'flex',gap:6}}>
+                  <input className="f-input" type="tel" placeholder="e.g. 9876543210"
+                    value={prefs.customer_phone||''}
+                    onChange={e=>setPrefs({...prefs,customer_phone:e.target.value})}
+                    style={{flex:1}}/>
+                  {prefs.customer_phone?.length>=10 && (
+                    <button className="btn btn-ghost btn-sm" onClick={async()=>{
+                      try {
+                        const d = await api(`/venues/${venue.id}/customer?phone=${prefs.customer_phone}`);
+                        if(d.found) toast(`Hi ${d.name||''}! You have ${d.loyalty_points} pts`);
+                        else toast('New customer — you\'ll earn points on this order!');
+                      } catch(e){}
+                    }}>Check</button>
+                  )}
+                </div>
+                <div style={{fontSize:'0.62rem',color:'var(--gray)',marginTop:3}}>
+                  Earn 1 point per ₹10 spent. Redeem at counter.
+                </div>
+              </div>
             </div>
             <div className="cart-foot">
-              <div className="cart-total-row"><span>Total</span><span>₹{cart.total.toFixed(0)}</span></div>
+              {/* ── Coupon ── */}
+              <div style={{marginBottom:10}}>
+                <div style={{display:'flex',gap:6}}>
+                  <input className="f-input" style={{flex:1,fontSize:'0.72rem',padding:'8px 10px'}}
+                    placeholder="Coupon code" value={couponCode}
+                    onChange={e=>{setCouponCode(e.target.value.toUpperCase()); setCouponData(null);}}
+                    onKeyDown={e=>e.key==='Enter' && checkCoupon()}
+                  />
+                  <button className="btn btn-ghost btn-sm" onClick={checkCoupon}
+                    disabled={couponChecking || !couponCode.trim()}>
+                    {couponChecking ? '…' : 'Apply'}
+                  </button>
+                </div>
+                {couponData?.valid && (
+                  <div style={{fontSize:'0.68rem',color:'#166534',marginTop:4,display:'flex',justifyContent:'space-between'}}>
+                    <span>🎉 {couponData.description}</span>
+                    <span style={{cursor:'pointer',color:'#888'}} onClick={()=>{setCouponData(null);setCouponCode('');}}>✕</span>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Totals ── */}
+              {couponData?.valid ? (
+                <div style={{marginBottom:8}}>
+                  <div className="cart-total-row" style={{color:'var(--gray)',textDecoration:'line-through',fontSize:'0.75rem'}}>
+                    <span>Subtotal</span><span>₹{cart.total.toFixed(0)}</span>
+                  </div>
+                  <div className="cart-total-row" style={{color:'#166534',fontSize:'0.75rem'}}>
+                    <span>Discount</span><span>-₹{couponData.discount.toFixed(0)}</span>
+                  </div>
+                  <div className="cart-total-row">
+                    <span>Total</span><span>₹{(cart.total - couponData.discount).toFixed(0)}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="cart-total-row" style={{marginBottom:8}}>
+                  <span>Total</span><span>₹{cart.total.toFixed(0)}</span>
+                </div>
+              )}
+
+              {/* ── Split payment toggle ── */}
+              <div style={{marginBottom:8}}>
+                <label style={{display:'flex',alignItems:'center',gap:6,fontSize:'0.68rem',color:'var(--gray)',cursor:'pointer'}}>
+                  <input type="checkbox" checked={splitMode} onChange={e=>setSplitMode(e.target.checked)}/>
+                  Split payment between methods
+                </label>
+                {splitMode && (
+                  <div style={{marginTop:8,display:'flex',flexDirection:'column',gap:6}}>
+                    {splits.map((sp,i)=>(
+                      <div key={i} style={{display:'flex',gap:6,alignItems:'center'}}>
+                        <select className="f-select" style={{flex:'0 0 90px',fontSize:'0.7rem',padding:'6px 8px'}}
+                          value={sp.method} onChange={e=>{const s=[...splits];s[i]={...s[i],method:e.target.value};setSplits(s);}}>
+                          <option value="cash">Cash</option>
+                          <option value="card">Card</option>
+                          <option value="upi">UPI</option>
+                          <option value="paypal">PayPal</option>
+                        </select>
+                        <input className="f-input" type="number" style={{flex:1,fontSize:'0.7rem',padding:'6px 8px'}}
+                          placeholder="Amount" value={sp.amount}
+                          onChange={e=>{const s=[...splits];s[i]={...s[i],amount:e.target.value};setSplits(s);}}/>
+                        {splits.length>1 && (
+                          <span style={{cursor:'pointer',color:'#888',padding:'0 4px'}}
+                            onClick={()=>setSplits(splits.filter((_,j)=>j!==i))}>✕</span>
+                        )}
+                      </div>
+                    ))}
+                    <button className="btn btn-ghost btn-sm" style={{alignSelf:'flex-start'}}
+                      onClick={()=>setSplits([...splits,{method:'cash',amount:''}])}>+ Add method</button>
+                    <div style={{fontSize:'0.65rem',color:'#888'}}>
+                      Remaining: ₹{((couponData ? cart.total-couponData.discount : cart.total) - splits.reduce((s,sp)=>s+parseFloat(sp.amount||0),0)).toFixed(0)}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <button className="order-submit-btn" disabled={placing} onClick={()=>placeOrder()}>
-                {placing ? 'Placing Order…' : `Place Order · ₹${cart.total.toFixed(0)}`}
+                {placing ? 'Placing Order…' : `Place Order · ₹${(couponData?.valid ? cart.total - couponData.discount : cart.total).toFixed(0)}`}
               </button>
               <div className="paypal-section">
                 <div className="paypal-divider">or pay with</div>
@@ -1016,6 +1215,57 @@ function AdminLogin({onLogin, onBack}) {
   );
 }
 
+function GSTSettings({ venueId, token, toast }) {
+  const [gstRate, setGstRate] = useState('5');
+  const [gstin,   setGstin]   = useState('');
+  const [saved,   setSaved]   = useState(false);
+
+  const save = async () => {
+    try {
+      await api(`/admin/venues/${venueId}/settings`, {
+        method: 'PUT',
+        body: JSON.stringify({ gst_rate: parseFloat(gstRate), gstin: gstin.trim() })
+      }, token);
+      setSaved(true);
+      toast('GST settings saved');
+      setTimeout(() => setSaved(false), 2000);
+    } catch(e) { toast(e.message); }
+  };
+
+  return (
+    <div style={{marginTop:16,padding:'12px 16px',background:'var(--paper)',border:'1px solid var(--light-gray)'}}>
+      <div style={{fontSize:'0.6rem',letterSpacing:'2px',textTransform:'uppercase',color:'var(--black)',fontWeight:600,marginBottom:10}}>
+        GST Settings (for bills)
+      </div>
+      <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end'}}>
+        <div style={{display:'flex',flexDirection:'column',gap:4}}>
+          <label style={{fontSize:'0.6rem',letterSpacing:'1.5px',textTransform:'uppercase',color:'var(--gray)'}}>
+            GST Rate %
+          </label>
+          <select className="f-select" style={{width:100}} value={gstRate} onChange={e=>setGstRate(e.target.value)}>
+            <option value="0">0% (exempt)</option>
+            <option value="5">5% (non-AC)</option>
+            <option value="12">12%</option>
+            <option value="18">18% (AC)</option>
+            <option value="28">28%</option>
+          </select>
+        </div>
+        <div style={{display:'flex',flexDirection:'column',gap:4,flex:1,minWidth:200}}>
+          <label style={{fontSize:'0.6rem',letterSpacing:'1.5px',textTransform:'uppercase',color:'var(--gray)'}}>
+            GSTIN (optional)
+          </label>
+          <input className="f-input" value={gstin} onChange={e=>setGstin(e.target.value)}
+            placeholder="e.g. 27AABCU9603R1ZX"/>
+        </div>
+        <button className="btn btn-black btn-sm" onClick={save}
+          style={{background: saved ? '#166534' : undefined}}>
+          {saved ? '✓ Saved' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TableQRManager({ venueId, venueName, token, toast }) {
   const [tables, setTables] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -1192,6 +1442,8 @@ function AdminVenues({token, toast}) {
               </div>
               <button className="btn btn-danger btn-sm" onClick={()=>del(v.id)}>Delete Venue</button>
             </div>
+            {/* GST Settings */}
+            <GSTSettings venueId={v.id} token={token} toast={toast}/>
             {/* Per-table QR manager embedded */}
             <TableQRManager venueId={v.id} venueName={v.name} token={token} toast={toast}/>
           </div>
@@ -1404,7 +1656,13 @@ function AdminOrders({token, toast}) {
   const [orders, setOrders] = useState([]);
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(false);
+  const [billOid, setBillOid] = useState(null);
+  const [billData, setBillData] = useState(null);
   useEffect(()=>{ api('/admin/venues',{},token).then(d=>{setVenues(d);if(d[0])setSel(d[0].id);}); },[token]);
+  useEffect(()=>{
+    if (!billOid || !sel) return;
+    fetch(`${API}/venues/${sel}/orders/${billOid}/bill`).then(r=>r.json()).then(setBillData).catch(()=>setBillData(null));
+  },[billOid,sel]);
   const load = useCallback(()=>{
     if(!sel)return;
     setLoading(true);
@@ -1416,6 +1674,7 @@ function AdminOrders({token, toast}) {
 
   return (
     <div className="sec-pad">
+      {billData && <GSTBill data={billData} onClose={()=>{setBillData(null);setBillOid(null);}}/> }
       <div className="sec-head">
         <div><h2>Live Orders</h2><p>Refreshes every 15 seconds</p></div>
         <div className="btn-row">
@@ -1434,23 +1693,30 @@ function AdminOrders({token, toast}) {
         orders.length===0 ? <div className="empty">No orders found</div> : (
         <div className="tbl-wrap">
           <table className="data-tbl">
-            <thead><tr><th>Order</th><th>Customer</th><th>Type</th><th>Items</th><th>Preferences</th><th>Total</th><th>Time</th><th>Status</th><th>Action</th></tr></thead>
+            <thead><tr><th>KOT</th><th>Order</th><th>Customer</th><th>Type</th><th>Items</th><th>Total</th><th>Time</th><th>Status</th><th>Action</th></tr></thead>
             <tbody>
               {orders.map(o=>(
                 <tr key={o.id}>
-                  <td style={{fontFamily:'monospace',fontSize:'0.72rem',letterSpacing:'1px'}}>{o.id.slice(0,8).toUpperCase()}</td>
-                  <td>{o.customer_name||'Guest'}{o.table_ref&&<span style={{color:'var(--gray)',fontSize:'0.7rem'}}> · {o.table_ref}</span>}</td>
+                  <td style={{fontFamily:'monospace',fontSize:'0.8rem',fontWeight:600}}>#{o.kot_number||'—'}</td>
+                  <td style={{fontFamily:'monospace',fontSize:'0.68rem',letterSpacing:'1px'}}>{o.id.slice(0,8).toUpperCase()}</td>
+                  <td>
+                    <div style={{fontSize:'0.75rem'}}>{o.customer_name||'Guest'}</div>
+                    {o.table_ref&&<div style={{color:'var(--gray)',fontSize:'0.68rem'}}>📍 {o.table_ref}</div>}
+                  </td>
                   <td style={{fontSize:'0.73rem'}}>{o.order_type==='dine-in'?'Dine In':'Takeaway'}</td>
                   <td style={{fontSize:'0.72rem',maxWidth:160,color:'var(--dark-gray)'}}>{o.items.map(i=>`${i.name}×${i.quantity}`).join(', ')}</td>
-                  <td style={{fontSize:'0.7rem'}}>
-                    <div style={{color:'var(--gray)'}}>{o.spice_level} · {o.portion_size}</div>
-                    {o.dietary_pref.length>0&&<div style={{color:'var(--gray)'}}>{o.dietary_pref.join(', ')}</div>}
-                    {o.special_instructions&&<div style={{color:'var(--mid-gray)',fontStyle:'italic',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={o.special_instructions}>"{o.special_instructions}"</div>}
+                  <td style={{fontWeight:500}}>
+                    <div>₹{o.total_amount?.toFixed(0)}</div>
+                    {o.coupon_code&&<div style={{fontSize:'0.65rem',color:'#166534'}}>🏷 {o.coupon_code} -₹{o.coupon_discount?.toFixed(0)}</div>}
                   </td>
-                  <td style={{fontWeight:500}}>₹{o.total_amount?.toFixed(0)}</td>
                   <td style={{fontSize:'0.7rem',color:'var(--gray)'}}>{o.created_at?.slice(11,16)}</td>
                   <td><span className={`status-badge ${o.status}`}>{o.status}</span></td>
-                  <td><div className="btn-row">{next[o.status]?.map(s=><button key={s} className="btn btn-ghost btn-sm" style={{fontSize:'0.62rem'}} onClick={()=>updateStatus(o.id,s)}>{s}</button>)}</div></td>
+                  <td>
+                    <div className="btn-row">
+                      {next[o.status]?.map(s=><button key={s} className="btn btn-ghost btn-sm" style={{fontSize:'0.62rem'}} onClick={()=>updateStatus(o.id,s)}>{s}</button>)}
+                      <button className="btn btn-ghost btn-sm" style={{fontSize:'0.62rem'}} onClick={()=>setBillOid(o.id)}>🧾 Bill</button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1630,12 +1896,958 @@ function AdminAnalytics({token}) {
   );
 }
 
+// ── KITCHEN DISPLAY SCREEN ──────────────────────────────
+// Auto-refreshes every 8 seconds. Kitchen staff mark orders Preparing → Ready.
+function KitchenDisplay({token, toast}) {
+  const [venues, setVenues]   = useState([]);
+  const [vid,    setVid]      = useState('');
+  const [orders, setOrders]   = useState([]);
+  const [loading, setLoading] = useState(false);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    api('/admin/venues', {}, token).then(v => {
+      setVenues(v);
+      if (v[0]) setVid(v[0].id);
+    });
+  }, [token]);
+
+  const loadOrders = useCallback(() => {
+    if (!vid) return;
+    fetch(`${API}/kitchen/${vid}/orders`, {
+      headers: { 'X-Kitchen-Pin': token }
+    })
+      .then(r => r.json())
+      .then(d => { setOrders(Array.isArray(d) ? d : []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [vid, token]);
+
+  useEffect(() => {
+    setLoading(true);
+    loadOrders();
+    timerRef.current = setInterval(loadOrders, 8000);
+    return () => clearInterval(timerRef.current);
+  }, [loadOrders]);
+
+  const bump = async (oid, next) => {
+    try {
+      await fetch(`${API}/kitchen/orders/${oid}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type':'application/json', 'X-Kitchen-Pin': token },
+        body: JSON.stringify({ status: next })
+      });
+      loadOrders();
+      toast(`Order marked ${next}`);
+    } catch(e) { toast(e.message); }
+  };
+
+  const statusColor = { pending:'#b45309', preparing:'#1d4ed8', ready:'#166534' };
+  const statusBg    = { pending:'#fef3c7', preparing:'#dbeafe', ready:'#dcfce7' };
+
+  return (
+    <div className="sec-pad">
+      <div className="sec-head">
+        <div>
+          <h2>Kitchen Display</h2>
+          <p>Active orders — auto-refreshes every 8 s. Tap a button to update status.</p>
+        </div>
+        <div style={{display:'flex',gap:10,alignItems:'center'}}>
+          <select className="f-select" style={{minWidth:160}} value={vid} onChange={e=>setVid(e.target.value)}>
+            {venues.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+          </select>
+          <button className="btn btn-ghost btn-sm" onClick={loadOrders}>↻ Refresh</button>
+        </div>
+      </div>
+
+      {loading && orders.length===0
+        ? <div className="loading"><div className="spin"/>Loading…</div>
+        : orders.length===0
+          ? <div className="empty" style={{padding:'40px 0'}}>🎉 No active orders right now</div>
+          : (
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:16,marginTop:8}}>
+          {orders.map(o => (
+            <div key={o.id} style={{
+              background:'#fff',border:`2px solid ${statusColor[o.status]||'#ccc'}`,
+              padding:'16px 18px',borderRadius:2,
+            }}>
+              {/* Header */}
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+                <div>
+                  <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:'1.4rem',fontWeight:600,lineHeight:1}}>
+                    KOT #{o.kot_number || '—'}
+                  </div>
+                  <div style={{fontSize:'0.7rem',color:'#666',marginTop:3}}>
+                    {o.table_ref ? `📍 ${o.table_ref}` : (o.order_type==='dine-in'?'Dine In':'Takeaway')}
+                    {o.customer_name && o.customer_name!=='Guest' && ` · ${o.customer_name}`}
+                  </div>
+                </div>
+                <span style={{
+                  fontSize:'0.6rem',letterSpacing:'1.5px',textTransform:'uppercase',
+                  fontWeight:700,padding:'4px 8px',
+                  background:statusBg[o.status], color:statusColor[o.status],
+                }}>
+                  {o.status}
+                </span>
+              </div>
+
+              {/* Items */}
+              <div style={{borderTop:'1px solid #eee',paddingTop:10,marginBottom:12}}>
+                {(o.items||[]).map((it,i) => (
+                  <div key={i} style={{display:'flex',justifyContent:'space-between',
+                    fontSize:'0.82rem',padding:'3px 0',borderBottom:'1px dotted #f0f0f0'}}>
+                    <span style={{fontWeight:500}}>{it.quantity}× {it.name}</span>
+                  </div>
+                ))}
+                {o.spice_level && (
+                  <div style={{fontSize:'0.7rem',color:'#888',marginTop:6}}>
+                    Spice: {o.spice_level}
+                    {o.special_instructions && ` · Note: "${o.special_instructions}"`}
+                  </div>
+                )}
+              </div>
+
+              {/* Action buttons */}
+              <div style={{display:'flex',gap:8}}>
+                {o.status==='pending' && (
+                  <button className="btn btn-black" style={{flex:1,fontSize:'0.7rem',padding:'8px 0'}}
+                    onClick={()=>bump(o.id,'preparing')}>
+                    🍳 Start Preparing
+                  </button>
+                )}
+                {o.status==='preparing' && (
+                  <button className="btn btn-black" style={{flex:1,fontSize:'0.7rem',padding:'8px 0',background:'#166534'}}
+                    onClick={()=>bump(o.id,'ready')}>
+                    ✅ Mark Ready
+                  </button>
+                )}
+                {o.status==='ready' && (
+                  <div style={{flex:1,textAlign:'center',fontSize:'0.7rem',color:'#166534',fontWeight:600,
+                    padding:'8px 0',background:'#dcfce7'}}>
+                    ✅ Ready for pickup
+                  </div>
+                )}
+              </div>
+
+              {/* Time */}
+              <div style={{fontSize:'0.62rem',color:'#aaa',marginTop:8,textAlign:'right'}}>
+                {new Date(o.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── WAITER DASHBOARD ──────────────────────────────────────
+// Table-wise live view. Waiter marks orders as Served & can print GST bill.
+function WaiterDashboard({token, toast}) {
+  const [venues,  setVenues]  = useState([]);
+  const [vid,     setVid]     = useState('');
+  const [orders,  setOrders]  = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [bill,    setBill]    = useState(null);   // { order, venue, bill }
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    api('/admin/venues', {}, token).then(v => {
+      setVenues(v);
+      if (v[0]) setVid(v[0].id);
+    });
+  }, [token]);
+
+  const loadOrders = useCallback(() => {
+    if (!vid) return;
+    api(`/admin/venues/${vid}/orders?status=pending`, {}, token)
+      .then(pending => api(`/admin/venues/${vid}/orders?status=preparing`, {}, token)
+        .then(prep   => api(`/admin/venues/${vid}/orders?status=ready`,    {}, token)
+          .then(ready => {
+            const merged = [...pending, ...prep, ...ready];
+            merged.sort((a,b) => new Date(a.created_at)-new Date(b.created_at));
+            setOrders(merged);
+            setLoading(false);
+          })
+        )
+      ).catch(() => setLoading(false));
+  }, [vid, token]);
+
+  useEffect(() => {
+    setLoading(true);
+    loadOrders();
+    timerRef.current = setInterval(loadOrders, 10000);
+    return () => clearInterval(timerRef.current);
+  }, [loadOrders]);
+
+  const markServed = async (oid) => {
+    try {
+      await api(`/admin/orders/${oid}/status`, { method:'PUT', body:JSON.stringify({status:'served'}) }, token);
+      loadOrders();
+      toast('Order marked served');
+    } catch(e) { toast(e.message); }
+  };
+
+  const printBill = async (oid) => {
+    try {
+      const data = await fetch(`${API}/venues/${vid}/orders/${oid}/bill`).then(r=>r.json());
+      setBill(data);
+    } catch(e) { toast('Failed to load bill'); }
+  };
+
+  // Group by table
+  const tables = {};
+  orders.forEach(o => {
+    const key = o.table_ref || (o.order_type==='dine-in' ? 'Dine-In (no table)' : 'Takeaway');
+    if (!tables[key]) tables[key] = [];
+    tables[key].push(o);
+  });
+
+  const statusDot = { pending:'#f59e0b', preparing:'#3b82f6', ready:'#16a34a' };
+
+  return (
+    <div className="sec-pad">
+      {/* GST bill modal */}
+      {bill && <GSTBill data={bill} onClose={()=>setBill(null)}/>}
+
+      <div className="sec-head">
+        <div><h2>Waiter Dashboard</h2><p>Live table view — mark served or print bill</p></div>
+        <div style={{display:'flex',gap:10,alignItems:'center'}}>
+          <select className="f-select" style={{minWidth:160}} value={vid} onChange={e=>setVid(e.target.value)}>
+            {venues.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+          </select>
+          <button className="btn btn-ghost btn-sm" onClick={loadOrders}>↻ Refresh</button>
+        </div>
+      </div>
+
+      {loading && orders.length===0
+        ? <div className="loading"><div className="spin"/>Loading…</div>
+        : Object.keys(tables).length===0
+          ? <div className="empty" style={{padding:'40px 0'}}>No active tables right now</div>
+          : (
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:16,marginTop:8}}>
+          {Object.entries(tables).map(([tbl, ords]) => (
+            <div key={tbl} style={{background:'#fff',border:'1px solid var(--light-gray)',padding:'16px 18px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:'1.2rem'}}>{tbl}</div>
+                <span style={{fontSize:'0.65rem',color:'#888'}}>{ords.length} order{ords.length>1?'s':''}</span>
+              </div>
+              {ords.map(o => (
+                <div key={o.id} style={{borderTop:'1px solid #f0f0f0',paddingTop:10,marginTop:8}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                    <span style={{fontSize:'0.78rem',fontWeight:600}}>KOT #{o.kot_number||'—'}</span>
+                    <span style={{
+                      display:'flex',alignItems:'center',gap:4,
+                      fontSize:'0.65rem',fontWeight:700,textTransform:'uppercase',letterSpacing:'1px',
+                      color: statusDot[o.status]||'#888',
+                    }}>
+                      <span style={{width:8,height:8,borderRadius:'50%',background:statusDot[o.status]||'#ccc',display:'inline-block'}}/>
+                      {o.status}
+                    </span>
+                  </div>
+                  <div style={{fontSize:'0.75rem',color:'#555',marginBottom:8,lineHeight:1.6}}>
+                    {(o.items||[]).map((it,i)=>(
+                      <span key={i}>{it.quantity}× {it.name}{i<o.items.length-1?', ':''}</span>
+                    ))}
+                  </div>
+                  <div style={{display:'flex',gap:6}}>
+                    {o.status==='ready' && (
+                      <button className="btn btn-black btn-sm" style={{flex:1,fontSize:'0.65rem'}}
+                        onClick={()=>markServed(o.id)}>✓ Mark Served</button>
+                    )}
+                    <button className="btn btn-ghost btn-sm" style={{flex:1,fontSize:'0.65rem'}}
+                      onClick={()=>printBill(o.id)}>🧾 Print Bill</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── GST BILL MODAL ────────────────────────────────────────
+function GSTBill({ data, onClose }) {
+  const { order, venue, bill } = data;
+  const printRef = useRef(null);
+
+  const doPrint = () => {
+    const w = window.open('', '_blank');
+    w.document.write(`<html><head><title>Bill</title><style>
+      body{font-family:Arial,sans-serif;font-size:12px;margin:20px;color:#000}
+      h2{margin:0 0 4px;font-size:16px} p{margin:2px 0;font-size:11px}
+      table{width:100%;border-collapse:collapse;margin:10px 0}
+      th,td{border:1px solid #ccc;padding:4px 6px;font-size:11px}
+      th{background:#f5f5f5;text-align:left}
+      .right{text-align:right} .bold{font-weight:bold}
+      .tot{font-size:13px;font-weight:bold}
+      hr{border:none;border-top:1px dashed #999;margin:8px 0}
+    </style></head><body>${printRef.current.innerHTML}</body></html>`);
+    w.document.close(); w.focus(); w.print(); w.close();
+  };
+
+  const half = (bill.gst_rate / 2).toFixed(1);
+
+  return (
+    <div className="modal-bg">
+      <div className="modal-box" style={{maxWidth:440,padding:'28px 32px'}}>
+        {/* Printable area */}
+        <div ref={printRef}>
+          <div style={{textAlign:'center',marginBottom:12}}>
+            <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:'1.6rem',fontWeight:400,margin:0}}>
+              {venue.name}
+            </h2>
+            {venue.address && <p style={{fontSize:'0.7rem',color:'#888',margin:'2px 0'}}>{venue.address}</p>}
+            {venue.gstin   && <p style={{fontSize:'0.7rem',color:'#888',margin:'2px 0'}}>GSTIN: {venue.gstin}</p>}
+          </div>
+
+          <hr style={{borderTop:'1px dashed #ccc',margin:'10px 0'}}/>
+
+          <div style={{display:'flex',justifyContent:'space-between',fontSize:'0.75rem',marginBottom:4}}>
+            <span>KOT #{order.kot_number||'—'}</span>
+            <span>{order.table_ref||order.order_type}</span>
+          </div>
+          <div style={{display:'flex',justifyContent:'space-between',fontSize:'0.75rem',marginBottom:8}}>
+            <span>{order.customer_name||'Guest'}</span>
+            <span>{new Date(order.created_at).toLocaleString()}</span>
+          </div>
+
+          <hr style={{borderTop:'1px dashed #ccc',margin:'8px 0'}}/>
+
+          {/* Items */}
+          <table style={{width:'100%',borderCollapse:'collapse',marginBottom:8}}>
+            <thead>
+              <tr style={{fontSize:'0.68rem',borderBottom:'1px solid #ddd',color:'#555'}}>
+                <th style={{textAlign:'left',padding:'4px 0',fontWeight:600}}>Item</th>
+                <th style={{textAlign:'center',padding:'4px 0',fontWeight:600}}>Qty</th>
+                <th style={{textAlign:'right',padding:'4px 0',fontWeight:600}}>Rate</th>
+                <th style={{textAlign:'right',padding:'4px 0',fontWeight:600}}>Amt</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(order.items||[]).map((it,i)=>(
+                <tr key={i} style={{fontSize:'0.73rem',borderBottom:'1px dotted #eee'}}>
+                  <td style={{padding:'4px 0'}}>{it.name}</td>
+                  <td style={{textAlign:'center',padding:'4px 0'}}>{it.quantity}</td>
+                  <td style={{textAlign:'right',padding:'4px 0'}}>₹{it.price.toFixed(2)}</td>
+                  <td style={{textAlign:'right',padding:'4px 0'}}>₹{(it.price*it.quantity).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <hr style={{borderTop:'1px dashed #ccc',margin:'8px 0'}}/>
+
+          {/* Totals */}
+          <div style={{fontSize:'0.75rem'}}>
+            {[
+              ['Subtotal (excl. GST)', `₹${bill.subtotal.toFixed(2)}`],
+              ...(order.coupon_code ? [
+                [`Coupon (${order.coupon_code})`, `-₹${(order.coupon_discount||0).toFixed(2)}`]
+              ] : []),
+              [`CGST @ ${half}%`,      `₹${bill.cgst.toFixed(2)}`],
+              [`SGST @ ${half}%`,      `₹${bill.sgst.toFixed(2)}`],
+            ].map(([l,v])=>(
+              <div key={l} style={{display:'flex',justifyContent:'space-between',padding:'2px 0'}}>
+                <span style={{color:'#555'}}>{l}</span><span>{v}</span>
+              </div>
+            ))}
+            <div style={{display:'flex',justifyContent:'space-between',
+              fontFamily:"'Cormorant Garamond',serif",fontSize:'1.1rem',
+              borderTop:'1px solid #000',marginTop:6,paddingTop:6,fontWeight:600}}>
+              <span>Total</span><span>₹{bill.total.toFixed(2)}</span>
+            </div>
+          </div>
+
+          <hr style={{borderTop:'1px dashed #ccc',margin:'12px 0'}}/>
+          <div style={{textAlign:'center',fontSize:'0.65rem',color:'#999',letterSpacing:'1px'}}>
+            THANK YOU — VISIT AGAIN
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div style={{display:'flex',gap:10,marginTop:20,justifyContent:'flex-end'}}>
+          <button className="btn btn-ghost" onClick={onClose}>Close</button>
+          <button className="btn btn-black" onClick={doPrint}>🖨 Print</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ADMIN COUPONS ────────────────────────────
+function AdminCoupons({token, toast}) {
+  const [venues,  setVenues]  = useState([]);
+  const [vid,     setVid]     = useState('');
+  const [coupons, setCoupons] = useState([]);
+  const [form,    setForm]    = useState({code:'',discount_type:'percent',discount_value:'',min_order:'',max_discount:'',usage_limit:'',expires_at:''});
+  const [loading, setLoading] = useState(false);
+
+  useEffect(()=>{
+    api('/admin/venues',{},token).then(v=>{setVenues(v); if(v[0]) setVid(v[0].id);});
+  },[token]);
+
+  useEffect(()=>{
+    if (!vid) return;
+    setLoading(true);
+    api(`/admin/venues/${vid}/coupons`,{},token).then(d=>{setCoupons(d);setLoading(false);});
+  },[vid,token]);
+
+  const save = async() => {
+    if (!form.code || !form.discount_value) return toast('Code and discount value required');
+    try {
+      await api(`/admin/venues/${vid}/coupons`,{method:'POST',body:JSON.stringify(form)},token);
+      toast('Coupon created!');
+      setForm({code:'',discount_type:'percent',discount_value:'',min_order:'',max_discount:'',usage_limit:'',expires_at:''});
+      api(`/admin/venues/${vid}/coupons`,{},token).then(setCoupons);
+    } catch(e) { toast(e.message); }
+  };
+
+  const toggle = async(c) => {
+    await api(`/admin/coupons/${c.id}`,{method:'PUT',body:JSON.stringify({...c,active:c.active?0:1})},token);
+    api(`/admin/venues/${vid}/coupons`,{},token).then(setCoupons);
+  };
+
+  const del = async(id) => {
+    if (!confirm('Delete coupon?')) return;
+    await api(`/admin/coupons/${id}`,{method:'DELETE'},token);
+    setCoupons(coupons.filter(c=>c.id!==id));
+    toast('Deleted');
+  };
+
+  return (
+    <div className="sec-pad">
+      <div className="sec-head">
+        <div><h2>Coupons</h2><p>Create and manage discount codes for customers</p></div>
+        <select className="f-select" style={{minWidth:160}} value={vid} onChange={e=>setVid(e.target.value)}>
+          {venues.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+        </select>
+      </div>
+
+      {/* Create form */}
+      <div style={{background:'var(--paper)',border:'1px solid var(--light-gray)',padding:'20px 22px',marginBottom:24}}>
+        <div style={{fontSize:'0.6rem',letterSpacing:'2px',textTransform:'uppercase',marginBottom:14,fontWeight:600}}>New Coupon</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:10,marginBottom:12}}>
+          {[
+            {k:'code',ph:'CODE',label:'Code'},
+            {k:'discount_value',ph:'10',label:'Value',type:'number'},
+            {k:'min_order',ph:'0',label:'Min Order ₹',type:'number'},
+            {k:'max_discount',ph:'0 = no cap',label:'Max Discount ₹',type:'number'},
+            {k:'usage_limit',ph:'0 = unlimited',label:'Usage Limit',type:'number'},
+            {k:'expires_at',ph:'',label:'Expires',type:'date'},
+          ].map(({k,ph,label,type='text'})=>(
+            <div key={k} style={{display:'flex',flexDirection:'column',gap:4}}>
+              <label style={{fontSize:'0.58rem',letterSpacing:'1.5px',textTransform:'uppercase',color:'var(--gray)'}}>{label}</label>
+              <input className="f-input" type={type} placeholder={ph}
+                value={form[k]} onChange={e=>setForm({...form,[k]:e.target.value})}
+                style={{textTransform:k==='code'?'uppercase':'none'}}/>
+            </div>
+          ))}
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            <label style={{fontSize:'0.58rem',letterSpacing:'1.5px',textTransform:'uppercase',color:'var(--gray)'}}>Type</label>
+            <select className="f-select" value={form.discount_type} onChange={e=>setForm({...form,discount_type:e.target.value})}>
+              <option value="percent">% off</option>
+              <option value="flat">₹ flat</option>
+            </select>
+          </div>
+        </div>
+        <button className="btn btn-black btn-sm" onClick={save}>Create Coupon</button>
+      </div>
+
+      {/* List */}
+      {loading ? <div className="loading"><div className="spin"/>Loading…</div> : (
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {coupons.length===0
+            ? <div className="empty">No coupons yet</div>
+            : coupons.map(c=>(
+            <div key={c.id} style={{background:'#fff',border:'1px solid var(--light-gray)',padding:'12px 16px',
+              display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8,
+              opacity:c.active?1:0.5}}>
+              <div>
+                <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:'1.1rem',fontWeight:600,letterSpacing:'2px'}}>
+                  {c.code}
+                </span>
+                <span style={{fontSize:'0.7rem',color:'var(--gray)',marginLeft:10}}>
+                  {c.discount_type==='percent' ? `${c.discount_value}% off` : `₹${c.discount_value} flat`}
+                  {c.min_order > 0 && ` · min ₹${c.min_order}`}
+                  {c.max_discount > 0 && ` · max ₹${c.max_discount}`}
+                </span>
+              </div>
+              <div style={{display:'flex',gap:8,alignItems:'center',fontSize:'0.68rem',color:'var(--gray)'}}>
+                <span>{c.used_count}/{c.usage_limit||'∞'} used</span>
+                {c.expires_at && <span>exp {c.expires_at}</span>}
+                <button className="btn btn-ghost btn-sm" style={{fontSize:'0.65rem'}} onClick={()=>toggle(c)}>
+                  {c.active ? 'Disable' : 'Enable'}
+                </button>
+                <button className="btn btn-ghost btn-sm" style={{fontSize:'0.65rem',color:'#991b1b'}} onClick={()=>del(c.id)}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ADMIN FEEDBACK ────────────────────────────
+function AdminFeedback({token, toast}) {
+  const [venues,  setVenues]  = useState([]);
+  const [vid,     setVid]     = useState('');
+  const [data,    setData]    = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(()=>{
+    api('/admin/venues',{},token).then(v=>{setVenues(v); if(v[0]) setVid(v[0].id);});
+  },[token]);
+
+  useEffect(()=>{
+    if (!vid) return;
+    setLoading(true);
+    api(`/admin/venues/${vid}/feedback`,{},token).then(d=>{setData(d);setLoading(false);});
+  },[vid,token]);
+
+  const stars = (n) => '★'.repeat(n) + '☆'.repeat(5-n);
+  const starColor = (r) => r>=4?'#f59e0b':r===3?'#f97316':'#ef4444';
+
+  return (
+    <div className="sec-pad">
+      <div className="sec-head">
+        <div>
+          <h2>Customer Reviews</h2>
+          {data && (
+            <p>
+              <span style={{fontSize:'1.4rem',fontWeight:600}}>{data.average_rating||'—'}</span>
+              <span style={{color:'#f59e0b',marginLeft:6}}>{data.average_rating ? stars(Math.round(data.average_rating)) : ''}</span>
+              <span style={{color:'var(--gray)',fontSize:'0.72rem',marginLeft:6}}>({data.total_reviews} reviews)</span>
+            </p>
+          )}
+        </div>
+        <select className="f-select" style={{minWidth:160}} value={vid} onChange={e=>setVid(e.target.value)}>
+          {venues.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+        </select>
+      </div>
+
+      {loading ? <div className="loading"><div className="spin"/>Loading…</div> :
+        !data || data.reviews.length===0
+          ? <div className="empty" style={{padding:'40px 0'}}>No reviews yet</div>
+          : (
+        <div style={{display:'flex',flexDirection:'column',gap:10}}>
+          {data.reviews.map(r=>(
+            <div key={r.id} style={{background:'#fff',border:'1px solid var(--light-gray)',padding:'14px 18px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:4}}>
+                <div>
+                  <span style={{color:starColor(r.rating),fontSize:'1rem',letterSpacing:'1px'}}>{stars(r.rating)}</span>
+                  <span style={{marginLeft:8,fontSize:'0.7rem',color:'var(--gray)'}}>
+                    {r.customer_name||'Guest'}{r.table_ref&&` · ${r.table_ref}`}
+                  </span>
+                </div>
+                <span style={{fontSize:'0.65rem',color:'var(--mid-gray)'}}>
+                  {new Date(r.created_at).toLocaleDateString()}
+                </span>
+              </div>
+              {r.comment && (
+                <p style={{fontSize:'0.78rem',color:'var(--ink)',margin:0,fontStyle:'italic'}}>
+                  "{r.comment}"
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ADMIN INVENTORY ──────────────────────────
+function AdminInventory({token, toast}) {
+  const [venues,  setVenues]  = useState([]);
+  const [vid,     setVid]     = useState('');
+  const [items,   setItems]   = useState([]);
+  const [menuItems,setMenuItems]=useState([]);
+  const [loading, setLoading] = useState(false);
+  const [form,    setForm]    = useState({name:'',unit:'units',quantity:'',low_stock_threshold:'10',cost_per_unit:'',menu_item_id:''});
+  const [adjustId,setAdjustId]=useState(null);
+  const [adjustVal,setAdjustVal]=useState('');
+  const [adjustReason,setAdjustReason]=useState('restock');
+
+  useEffect(()=>{
+    api('/admin/venues',{},token).then(v=>{setVenues(v);if(v[0])setVid(v[0].id);});
+  },[token]);
+
+  const load = ()=>{
+    if(!vid) return;
+    setLoading(true);
+    api(`/admin/venues/${vid}/inventory`,{},token).then(d=>{setItems(d);setLoading(false);});
+    api(`/admin/venues/${vid}/items`,{},token).then(setMenuItems);
+  };
+  useEffect(()=>{ load(); },[vid]);
+
+  const save = async()=>{
+    if(!form.name) return toast('Name required');
+    try {
+      await api(`/admin/venues/${vid}/inventory`,{method:'POST',body:JSON.stringify({
+        ...form, quantity:parseFloat(form.quantity||0),
+        low_stock_threshold:parseFloat(form.low_stock_threshold||10),
+        cost_per_unit:parseFloat(form.cost_per_unit||0),
+        menu_item_id:form.menu_item_id||null
+      })},token);
+      toast('Item added'); setForm({name:'',unit:'units',quantity:'',low_stock_threshold:'10',cost_per_unit:'',menu_item_id:''}); load();
+    } catch(e){toast(e.message);}
+  };
+
+  const adjust = async(iid)=>{
+    const change = parseFloat(adjustVal);
+    if(isNaN(change)||change===0) return toast('Enter a non-zero amount');
+    await api(`/admin/inventory/${iid}`,{method:'PUT',body:JSON.stringify({change,reason:adjustReason})},token);
+    toast(`Stock updated by ${change>0?'+':''}${change}`); setAdjustId(null); setAdjustVal(''); load();
+  };
+
+  const del = async(iid)=>{ if(!confirm('Delete?')) return; await api(`/admin/inventory/${iid}`,{method:'DELETE'},token); load(); };
+
+  const low = items.filter(i=>i.quantity<=i.low_stock_threshold);
+
+  return (
+    <div className="sec-pad">
+      <div className="sec-head">
+        <div>
+          <h2>Inventory</h2>
+          {low.length>0 && <p style={{color:'#991b1b'}}>⚠ {low.length} item{low.length>1?'s':''} low on stock</p>}
+        </div>
+        <select className="f-select" style={{minWidth:160}} value={vid} onChange={e=>setVid(e.target.value)}>
+          {venues.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+        </select>
+      </div>
+
+      {/* Add form */}
+      <div style={{background:'var(--paper)',border:'1px solid var(--light-gray)',padding:'18px 20px',marginBottom:20}}>
+        <div style={{fontSize:'0.6rem',letterSpacing:'2px',textTransform:'uppercase',marginBottom:12,fontWeight:600}}>Add Inventory Item</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(130px,1fr))',gap:8,marginBottom:10}}>
+          {[{k:'name',ph:'e.g. Coffee Beans',label:'Name'},
+            {k:'unit',ph:'kg / litres / units',label:'Unit'},
+            {k:'quantity',ph:'0',label:'Initial Qty',type:'number'},
+            {k:'low_stock_threshold',ph:'10',label:'Alert Below',type:'number'},
+            {k:'cost_per_unit',ph:'0',label:'Cost/Unit ₹',type:'number'},
+          ].map(({k,ph,label,type='text'})=>(
+            <div key={k} style={{display:'flex',flexDirection:'column',gap:3}}>
+              <label style={{fontSize:'0.58rem',letterSpacing:'1.5px',textTransform:'uppercase',color:'var(--gray)'}}>{label}</label>
+              <input className="f-input" type={type} placeholder={ph} value={form[k]}
+                onChange={e=>setForm({...form,[k]:e.target.value})}/>
+            </div>
+          ))}
+          <div style={{display:'flex',flexDirection:'column',gap:3}}>
+            <label style={{fontSize:'0.58rem',letterSpacing:'1.5px',textTransform:'uppercase',color:'var(--gray)'}}>Link Menu Item</label>
+            <select className="f-select" value={form.menu_item_id} onChange={e=>setForm({...form,menu_item_id:e.target.value})}>
+              <option value="">— none —</option>
+              {menuItems.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </div>
+        </div>
+        <button className="btn btn-black btn-sm" onClick={save}>Add Item</button>
+      </div>
+
+      {/* List */}
+      {loading ? <div className="loading"><div className="spin"/>Loading…</div> :
+        items.length===0 ? <div className="empty">No inventory items yet</div> : (
+        <div className="tbl-wrap">
+          <table className="data-tbl">
+            <thead><tr><th>Item</th><th>Linked To</th><th>Stock</th><th>Unit</th><th>Alert At</th><th>Cost/Unit</th><th>Action</th></tr></thead>
+            <tbody>
+              {items.map(i=>(
+                <tr key={i.id} style={{background:i.quantity<=i.low_stock_threshold?'#fef2f2':''}}>
+                  <td style={{fontWeight:500}}>{i.name}{i.quantity<=i.low_stock_threshold&&<span style={{color:'#dc2626',marginLeft:6,fontSize:'0.7rem'}}>● LOW</span>}</td>
+                  <td style={{fontSize:'0.7rem',color:'var(--gray)'}}>{i.item_name||'—'}</td>
+                  <td style={{fontWeight:600}}>{i.quantity}</td>
+                  <td style={{fontSize:'0.72rem'}}>{i.unit}</td>
+                  <td style={{fontSize:'0.72rem'}}>{i.low_stock_threshold}</td>
+                  <td style={{fontSize:'0.72rem'}}>₹{i.cost_per_unit||0}</td>
+                  <td>
+                    {adjustId===i.id ? (
+                      <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                        <input className="f-input" type="number" placeholder="±qty" value={adjustVal}
+                          onChange={e=>setAdjustVal(e.target.value)} style={{width:60,fontSize:'0.7rem',padding:'4px 6px'}}/>
+                        <select className="f-select" value={adjustReason} onChange={e=>setAdjustReason(e.target.value)}
+                          style={{fontSize:'0.68rem',padding:'4px 6px'}}>
+                          <option value="restock">Restock</option>
+                          <option value="usage">Usage</option>
+                          <option value="waste">Waste</option>
+                          <option value="adjustment">Adjust</option>
+                        </select>
+                        <button className="btn btn-black btn-sm" style={{fontSize:'0.62rem'}} onClick={()=>adjust(i.id)}>Save</button>
+                        <button className="btn btn-ghost btn-sm" style={{fontSize:'0.62rem'}} onClick={()=>setAdjustId(null)}>✕</button>
+                      </div>
+                    ) : (
+                      <div className="btn-row">
+                        <button className="btn btn-ghost btn-sm" style={{fontSize:'0.62rem'}} onClick={()=>{setAdjustId(i.id);setAdjustVal('');}}>± Stock</button>
+                        <button className="btn btn-ghost btn-sm" style={{fontSize:'0.62rem',color:'#991b1b'}} onClick={()=>del(i.id)}>Delete</button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ADMIN CRM ────────────────────────────────
+function AdminCRM({token, toast}) {
+  const [venues,  setVenues]  = useState([]);
+  const [vid,     setVid]     = useState('');
+  const [customers,setCustomers]=useState([]);
+  const [search,  setSearch]  = useState('');
+  const [loading, setLoading] = useState(false);
+  const [selected,setSelected]=useState(null);
+  const [detail,  setDetail]  = useState(null);
+  const [adjustPts,setAdjustPts]=useState('');
+  const [adjustReason,setAdjustReason]=useState('');
+
+  useEffect(()=>{
+    api('/admin/venues',{},token).then(v=>{setVenues(v);if(v[0])setVid(v[0].id);});
+  },[token]);
+
+  const load = ()=>{
+    if(!vid) return;
+    setLoading(true);
+    api(`/admin/venues/${vid}/customers${search?`?q=${encodeURIComponent(search)}`:''}`,{},token)
+      .then(d=>{setCustomers(d);setLoading(false);});
+  };
+  useEffect(()=>{ load(); },[vid]);
+
+  const openDetail = async(cid)=>{
+    setSelected(cid);
+    const d = await api(`/admin/customers/${cid}`,{},token);
+    setDetail(d);
+  };
+
+  const savePoints = async()=>{
+    const pts = parseInt(adjustPts);
+    if(isNaN(pts)||pts===0) return toast('Enter non-zero points');
+    await api(`/admin/customers/${selected}/loyalty`,{method:'POST',body:JSON.stringify({points:pts,reason:adjustReason||'manual'})},token);
+    toast('Points updated'); setAdjustPts(''); openDetail(selected);
+  };
+
+  const tierColor = pts => pts>=500?'#7c3aed':pts>=200?'#1d4ed8':pts>=50?'#166534':'#6b7280';
+  const tierLabel = pts => pts>=500?'Platinum':pts>=200?'Gold':pts>=50?'Silver':'Bronze';
+
+  return (
+    <div className="sec-pad">
+      <div className="sec-head">
+        <div><h2>Customers</h2><p>CRM · Loyalty Points · Order History</p></div>
+        <select className="f-select" style={{minWidth:160}} value={vid} onChange={e=>setVid(e.target.value)}>
+          {venues.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+        </select>
+      </div>
+
+      <div style={{display:'flex',gap:8,marginBottom:16}}>
+        <input className="f-input" style={{flex:1}} placeholder="Search by name or phone…"
+          value={search} onChange={e=>setSearch(e.target.value)}
+          onKeyDown={e=>e.key==='Enter'&&load()}/>
+        <button className="btn btn-ghost btn-sm" onClick={load}>Search</button>
+      </div>
+
+      {/* Customer detail panel */}
+      {detail && (
+        <div style={{background:'#fff',border:'2px solid var(--black)',padding:'20px 22px',marginBottom:20}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:14}}>
+            <div>
+              <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:'1.3rem'}}>{detail.name||'Guest'}</div>
+              <div style={{fontSize:'0.72rem',color:'var(--gray)'}}>{detail.phone}</div>
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={()=>{setSelected(null);setDetail(null);}}>✕</button>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:16}}>
+            {[
+              ['Points', `${detail.loyalty_points} pts`],
+              ['Tier', tierLabel(detail.loyalty_points)],
+              ['Total Spent', `₹${(detail.total_spent||0).toFixed(0)}`],
+              ['Visits', detail.visit_count||0],
+            ].map(([l,v])=>(
+              <div key={l} style={{textAlign:'center',background:'var(--paper)',padding:'10px 8px'}}>
+                <div style={{fontSize:'0.58rem',letterSpacing:'1.5px',textTransform:'uppercase',color:'var(--gray)',marginBottom:4}}>{l}</div>
+                <div style={{fontWeight:600,color:l==='Tier'?tierColor(detail.loyalty_points):'inherit'}}>{v}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:14}}>
+            <input className="f-input" type="number" placeholder="±points (e.g. -50 to redeem)"
+              value={adjustPts} onChange={e=>setAdjustPts(e.target.value)} style={{width:140,fontSize:'0.72rem'}}/>
+            <input className="f-input" placeholder="Reason" value={adjustReason}
+              onChange={e=>setAdjustReason(e.target.value)} style={{flex:1,fontSize:'0.72rem'}}/>
+            <button className="btn btn-black btn-sm" onClick={savePoints}>Adjust Points</button>
+          </div>
+          <div style={{fontSize:'0.7rem',color:'var(--gray)',marginBottom:6,letterSpacing:'1px',textTransform:'uppercase'}}>Recent Orders</div>
+          {(detail.orders||[]).slice(0,5).map(o=>(
+            <div key={o.id} style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--light-gray)',fontSize:'0.72rem'}}>
+              <span style={{fontFamily:'monospace'}}>{o.id.slice(0,8).toUpperCase()}</span>
+              <span>₹{o.total_amount?.toFixed(0)}</span>
+              <span style={{color:'var(--gray)'}}>{o.created_at?.slice(0,10)}</span>
+              <span className={`status-badge ${o.status}`}>{o.status}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {loading ? <div className="loading"><div className="spin"/>Loading…</div> :
+        customers.length===0 ? <div className="empty">No customers yet — they appear after first order with phone number</div> : (
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {customers.map(c=>(
+            <div key={c.id} style={{background:'#fff',border:'1px solid var(--light-gray)',padding:'12px 16px',
+              display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer',
+              borderLeft:selected===c.id?'3px solid var(--black)':'3px solid transparent'}}
+              onClick={()=>openDetail(c.id)}>
+              <div>
+                <div style={{fontWeight:500,fontSize:'0.82rem'}}>{c.name||'Guest'}</div>
+                <div style={{fontSize:'0.68rem',color:'var(--gray)'}}>{c.phone} · {c.visit_count} visit{c.visit_count!==1?'s':''}</div>
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div style={{color:tierColor(c.loyalty_points),fontWeight:700,fontSize:'0.82rem'}}>
+                  {c.loyalty_points} pts
+                </div>
+                <div style={{fontSize:'0.65rem',color:'var(--gray)'}}>₹{(c.total_spent||0).toFixed(0)} spent</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ADMIN INTEGRATIONS ────────────────────────
+function AdminIntegrations({token, toast}) {
+  const [venues, setVenues] = useState([]);
+  const [vid,    setVid]    = useState('');
+  const [orders, setOrders] = useState([]);
+  const [loading,setLoading]= useState(false);
+  const WEBHOOK_SECRET = 'aosa_webhook_2025';
+
+  useEffect(()=>{
+    api('/admin/venues',{},token).then(v=>{setVenues(v);if(v[0])setVid(v[0].id);});
+  },[token]);
+
+  const load = ()=>{
+    if(!vid) return;
+    setLoading(true);
+    api(`/admin/venues/${vid}/third-party-orders`,{},token).then(d=>{setOrders(d);setLoading(false);});
+  };
+  useEffect(()=>{ load(); },[vid]);
+
+  const base = window.location.origin;
+  const webhookUrl = (platform) => `${base}/api/webhook/${vid}/${platform}?secret=${WEBHOOK_SECRET}`;
+
+  const copyUrl = (url) => { navigator.clipboard.writeText(url); toast('URL copied!'); };
+
+  const testWebhook = async(platform) => {
+    const sample = platform==='zomato'
+      ? {order_id:`TEST-${Date.now()}`,items:[{name:'Cappuccino',quantity:2,price:180},{name:'Croissant',quantity:1,price:120}],total:480,customer:{name:'Test Customer',phone:'9999999999'}}
+      : {order_id:`TEST-${Date.now()}`,order_items:[{name:'Cafe Latte',quantity:1,price:200}],order_total:200,customer_name:'Swiggy Test',customer_phone:'8888888888'};
+    try {
+      const r = await fetch(`${base}/api/webhook/${vid}/${platform}?secret=${WEBHOOK_SECRET}`,{
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(sample)
+      });
+      const d = await r.json();
+      if(d.ok) { toast(`${platform} test order created! ID: ${d.order_id?.slice(0,8)?.toUpperCase()}`); load(); }
+      else if(d.duplicate) toast('Duplicate — use a different test (timestamp already used)');
+      else toast(`Error: ${d.error}`);
+    } catch(e) { toast(e.message); }
+  };
+
+  const platformColor = {zomato:'#e23744',swiggy:'#fc8019',error:'#dc2626',mapped:'#166534',received:'#1d4ed8'};
+
+  return (
+    <div className="sec-pad">
+      <div className="sec-head">
+        <div><h2>Integrations</h2><p>Zomato & Swiggy webhook endpoints</p></div>
+        <select className="f-select" style={{minWidth:160}} value={vid} onChange={e=>setVid(e.target.value)}>
+          {venues.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+        </select>
+      </div>
+
+      {/* Webhook config cards */}
+      {['zomato','swiggy'].map(platform=>(
+        <div key={platform} style={{background:'#fff',border:'1px solid var(--light-gray)',padding:'18px 20px',marginBottom:14}}>
+          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
+            <span style={{width:10,height:10,borderRadius:'50%',background:platformColor[platform],display:'inline-block'}}/>
+            <span style={{fontWeight:600,textTransform:'capitalize',fontSize:'0.9rem'}}>{platform}</span>
+          </div>
+          <div style={{fontSize:'0.68rem',color:'var(--gray)',marginBottom:6}}>Webhook URL to paste in {platform} restaurant panel:</div>
+          <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:10}}>
+            <code style={{flex:1,background:'var(--paper)',padding:'8px 10px',fontSize:'0.65rem',
+              wordBreak:'break-all',borderRadius:2,border:'1px solid var(--light-gray)'}}>
+              {webhookUrl(platform)}
+            </code>
+            <button className="btn btn-ghost btn-sm" onClick={()=>copyUrl(webhookUrl(platform))}>Copy</button>
+          </div>
+          <div style={{fontSize:'0.65rem',color:'var(--gray)',marginBottom:10}}>
+            <strong>How it works:</strong> When a customer orders on {platform}, their order is automatically
+            pushed to aosa as a KOT. Items are matched by name. Customer earns loyalty points automatically.
+          </div>
+          <button className="btn btn-black btn-sm" onClick={()=>testWebhook(platform)}>
+            ▶ Send Test Order
+          </button>
+        </div>
+      ))}
+
+      {/* Webhook secret */}
+      <div style={{background:'var(--paper)',border:'1px solid var(--light-gray)',padding:'14px 18px',marginBottom:20,fontSize:'0.72rem'}}>
+        <strong>Webhook Secret:</strong> <code style={{background:'#fff',padding:'2px 8px',marginLeft:6}}>{WEBHOOK_SECRET}</code>
+        <div style={{color:'var(--gray)',marginTop:4,fontSize:'0.65rem'}}>
+          Change via <code>WEBHOOK_SECRET</code> env var. Pass as <code>?secret=</code> query param or <code>X-Webhook-Secret</code> header.
+        </div>
+      </div>
+
+      {/* Incoming orders log */}
+      <div style={{fontSize:'0.6rem',letterSpacing:'2px',textTransform:'uppercase',marginBottom:10,fontWeight:600}}>
+        Incoming Orders Log
+        <button className="btn btn-ghost btn-sm" style={{marginLeft:10,fontSize:'0.6rem'}} onClick={load}>↻ Refresh</button>
+      </div>
+      {loading ? <div className="loading"><div className="spin"/>Loading…</div> :
+        orders.length===0 ? <div className="empty">No third-party orders yet — send a test order above</div> : (
+        <div className="tbl-wrap">
+          <table className="data-tbl">
+            <thead><tr><th>Platform</th><th>Platform ID</th><th>aosa Order</th><th>Status</th><th>Received</th></tr></thead>
+            <tbody>
+              {orders.map(o=>(
+                <tr key={o.id}>
+                  <td><span style={{color:platformColor[o.platform]||'#666',fontWeight:600,textTransform:'capitalize'}}>{o.platform}</span></td>
+                  <td style={{fontFamily:'monospace',fontSize:'0.68rem'}}>{o.platform_order_id}</td>
+                  <td style={{fontFamily:'monospace',fontSize:'0.68rem'}}>{o.mapped_order_id?o.mapped_order_id.slice(0,8).toUpperCase():'—'}</td>
+                  <td><span style={{color:platformColor[o.status]||'#666',fontWeight:500,fontSize:'0.7rem'}}>{o.status}</span></td>
+                  <td style={{fontSize:'0.68rem',color:'var(--gray)'}}>{o.created_at?.slice(11,16)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminApp({onHome}) {
   const [token, setToken] = useState(null);
   const [page, setPage] = useState('venues');
   const {toasts, add:toast} = useToast();
   if (!token) return <AdminLogin onLogin={setToken} onBack={onHome}/>;
-  const nav = [{id:'venues',icon:'⊞',label:'Venues'},{id:'menu',icon:'≡',label:'Menu Manager'},{id:'orders',icon:'◉',label:'Live Orders'},{id:'analytics',icon:'∿',label:'Analytics'}];
+  const nav = [
+    {id:'venues',    icon:'⊞', label:'Venues'},
+    {id:'menu',      icon:'≡', label:'Menu Manager'},
+    {id:'orders',    icon:'◉', label:'Live Orders'},
+    {id:'kitchen',   icon:'🍳', label:'Kitchen Display'},
+    {id:'waiter',    icon:'🪑', label:'Waiter View'},
+    {id:'coupons',   icon:'🏷', label:'Coupons'},
+    {id:'feedback',  icon:'★', label:'Reviews'},
+    {id:'inventory', icon:'📦', label:'Inventory'},
+    {id:'crm',       icon:'👥', label:'Customers'},
+    {id:'integrations', icon:'⚡', label:'Integrations'},
+    {id:'analytics', icon:'∿', label:'Analytics'},
+  ];
   return (
     <div className="admin-wrap">
       <div className="admin-sidebar">
@@ -1658,10 +2870,17 @@ function AdminApp({onHome}) {
         </div>
       </div>
       <div className="admin-main">
-        {page==='venues'    && <AdminVenues    token={token} toast={toast}/>}
-        {page==='menu'      && <AdminMenu      token={token} toast={toast}/>}
-        {page==='orders'    && <AdminOrders    token={token} toast={toast}/>}
-        {page==='analytics' && <AdminAnalytics token={token}/>}
+        {page==='venues'       && <AdminVenues      token={token} toast={toast}/>}
+        {page==='menu'         && <AdminMenu        token={token} toast={toast}/>}
+        {page==='orders'       && <AdminOrders      token={token} toast={toast}/>}
+        {page==='kitchen'      && <KitchenDisplay   token={token} toast={toast}/>}
+        {page==='waiter'       && <WaiterDashboard  token={token} toast={toast}/>}
+        {page==='coupons'      && <AdminCoupons     token={token} toast={toast}/>}
+        {page==='feedback'     && <AdminFeedback    token={token} toast={toast}/>}
+        {page==='inventory'    && <AdminInventory   token={token} toast={toast}/>}
+        {page==='crm'          && <AdminCRM         token={token} toast={toast}/>}
+        {page==='integrations' && <AdminIntegrations token={token} toast={toast}/>}
+        {page==='analytics'    && <AdminAnalytics   token={token}/>}
       </div>
       <Toasts toasts={toasts}/>
     </div>
