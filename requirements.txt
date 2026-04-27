@@ -6,3 +6,6 @@ langchain
 langchain-google-genai
 langchain-core
 requests
+gspread
+google-auth
+gunicorn
