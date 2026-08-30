@@ -1,43 +1,87 @@
 """
 aosa Bakehouse & Roastery — Order & Analytics Platform
-Flask + SQLite + Google Gemini
+Flask + SQLite + Google Gemini + LangChain
 """
 
-import os, json, uuid, sqlite3, random, requests as http_requests
+import os, json, uuid, sqlite3, random
+import importlib.util as _ilu
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, g, send_from_directory
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
-from google import genai
+from dotenv import load_dotenv
 
-# ── LANGCHAIN IMPORTS (pip install langchain langchain-google-genai langchain-core) ──
+load_dotenv()
+
+# ── Safe optional imports ──────────────────────────────────────────────────
+# These use find_spec() first to avoid the frozen importlib crash that happens
+# when a namespace package (like 'google') exists but its submodule does not.
+
+def _has(mod):
+    try:
+        return _ilu.find_spec(mod) is not None
+    except (ModuleNotFoundError, ValueError):
+        return False
+
+# requests (PayPal + webhook HTTP calls)
 try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-    from langchain_core.tools import tool as lc_tool
-    from langchain.agents import create_tool_calling_agent, AgentExecutor
-    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-    LANGCHAIN_OK = True
+    import requests as http_requests
 except ImportError:
+    http_requests = None
+    print("⚠️  requests not installed — PayPal & webhooks disabled.")
+    print("   Run: pip install requests")
+
+# scikit-learn + numpy (NLP menu search)
+if _has('sklearn') and _has('numpy'):
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    import numpy as np
+    SKLEARN_OK = True
+else:
+    SKLEARN_OK = False
+    np = None
+    print("⚠️  scikit-learn not installed — menu search disabled.")
+    print("   Run: pip install scikit-learn numpy")
+
+# google-genai (Gemini AI chat)
+if _has('google.genai'):
+    from google import genai
+else:
+    genai = None
+    print("⚠️  google-genai not installed — AI chat disabled.")
+    print("   Run: pip install google-genai")
+
+# LangChain (tool-calling agent — optional but recommended)
+LANGCHAIN_OK = False
+if _has('langchain_google_genai') and _has('langchain_core') and _has('langchain'):
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+        from langchain_core.tools import tool as lc_tool
+        from langchain.agents import create_tool_calling_agent, AgentExecutor
+        from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+        LANGCHAIN_OK = True
+    except ImportError as _lc_err:
+        LANGCHAIN_OK = False
+        print(f"⚠️  LangChain import error — using legacy Gemini chat. ({_lc_err})")
+        print("   Fix: pip install langchain==0.3.25 langchain-core==0.3.62 langchain-google-genai")
+else:
     LANGCHAIN_OK = False
-    print("⚠️  LangChain not installed — using legacy Gemini chat.\n"
-          "   Run:  pip install langchain langchain-google-genai langchain-core")
+    print("⚠️  LangChain not installed — using legacy Gemini chat.")
+    print("   Run: pip install langchain==0.3.25 langchain-core==0.3.62 langchain-google-genai")
 
 GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY', 'AIzaSyDQSdiQtiMl3pQGlPTLgAdDO1FbqvL7EPA')
-gemini_client = genai.Client(api_key=GOOGLE_API_KEY) if GOOGLE_API_KEY else None
+gemini_client = genai.Client(api_key=GOOGLE_API_KEY) if genai and GOOGLE_API_KEY else None
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, static_folder=_HERE, static_url_path='')
 DB_PATH = os.path.join(_HERE, 'aosa.db')
 ADMIN_PASSWORD   = os.environ.get('ADMIN_PASSWORD', 'admin123')
-KITCHEN_PIN      = os.environ.get('KITCHEN_PIN', 'kitchen')   # separate PIN for kitchen screen
-GST_RATE_DEFAULT = float(os.environ.get('GST_RATE', '5'))     # 5% default (non-AC); set 18 for AC
+KITCHEN_PIN      = os.environ.get('KITCHEN_PIN', 'kitchen')
+GST_RATE_DEFAULT = float(os.environ.get('GST_RATE', '5'))
 
 # ── PAYPAL CONFIG ──────────────────────────────
-PAYPAL_CLIENT_ID = os.environ.get('PAYPAL_CLIENT_ID', 'YOUR_PAYPAL_CLIENT_ID_HERE')
+PAYPAL_CLIENT_ID     = os.environ.get('PAYPAL_CLIENT_ID', 'YOUR_PAYPAL_CLIENT_ID_HERE')
 PAYPAL_CLIENT_SECRET = os.environ.get('PAYPAL_CLIENT_SECRET', 'YOUR_PAYPAL_SECRET_HERE')
-PAYPAL_BASE = os.environ.get('PAYPAL_BASE', 'https://api-m.sandbox.paypal.com')
+PAYPAL_BASE          = os.environ.get('PAYPAL_BASE', 'https://api-m.sandbox.paypal.com')
 
 def get_paypal_token():
     try:

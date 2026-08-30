@@ -1,11 +1,9 @@
 flask
+requests
 scikit-learn
 numpy
 google-genai
-langchain
+langchain==0.3.25
+langchain-core==0.3.62
 langchain-google-genai
-langchain-core
-requests
-gspread
-google-auth
 gunicorn

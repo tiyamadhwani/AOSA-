@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>aosa — Order & Dine</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/react@18.2.0/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--white:#fff;--off:#fafaf8;--paper:#f5f4f0;--lg:#ebebeb;--mg:#d0d0d0;--gray:#888;--dg:#444;--black:#0d0d0d;--ink:#1a1a1a;--green:#16a34a;--red:#dc2626;--amber:#d97706}
+html,body,#root{height:100%;background:var(--white);color:var(--ink);font-family:'Jost',sans-serif}
+h1,h2,h3{font-family:'Cormorant Garamond',serif}
+button{cursor:pointer;font-family:'Jost',sans-serif}
+input,textarea,select{font-family:'Jost',sans-serif;color:var(--ink)}
+::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:var(--mg);border-radius:2px}
+
+/* SPLASH */
+.hero{position:relative;height:100vh;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.hero-bg{position:absolute;inset:0;background-image:url('https://static.wixstatic.com/media/5354eb_272dec4bd8cc4989b44bbef14561e499~mv2.jpg/v1/fill/w_1200,h_800,q_90,enc_avif,quality_auto/5354eb_272dec4bd8cc4989b44bbef14561e499~mv2.jpg');background-size:cover;background-position:center;filter:brightness(.3)}
+.hero-content{position:relative;z-index:2;text-align:center;padding:40px 24px;width:100%;max-width:540px}
+.logo{font-size:5rem;font-weight:300;letter-spacing:12px;color:var(--white);line-height:1}
+.tagline{font-size:.65rem;letter-spacing:5px;text-transform:uppercase;color:rgba(255,255,255,.6);margin-top:6px}
+.divider{width:36px;height:1px;background:rgba(255,255,255,.3);margin:20px auto}
+.hero-desc{font-size:.85rem;color:rgba(255,255,255,.65);font-style:italic;line-height:1.7;margin-bottom:28px}
+.hero-btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.hbtn{padding:13px 36px;font-size:.72rem;letter-spacing:2px;text-transform:uppercase;font-weight:500;border-radius:2px;transition:all .2s;cursor:pointer}
+.hbtn.solid{background:var(--white);color:var(--black);border:1px solid var(--white)}
+.hbtn.solid:hover{background:transparent;color:var(--white)}
+.hbtn.outline{background:transparent;color:var(--white);border:1px solid rgba(255,255,255,.5)}
+.hbtn.outline:hover{border-color:var(--white)}
+
+/* GEO ALERT */
+.geo-banner{background:#fef3c7;border-bottom:2px solid #f59e0b;padding:12px 20px;font-size:.78rem;color:#92400e;display:flex;align-items:center;gap:8px}
+.geo-ok{background:#dcfce7;border-bottom:2px solid #22c55e;color:#166534}
+
+/* VENUE PICKER */
+.venue-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;padding:40px;max-width:900px;margin:0 auto}
+.venue-card{border:1px solid var(--lg);padding:24px;cursor:pointer;transition:all .2s;position:relative;background:var(--white)}
+.venue-card:hover{border-color:var(--black);transform:translateY(-2px)}
+.vc-type{font-size:.58rem;letter-spacing:3px;text-transform:uppercase;color:var(--gray);margin-bottom:6px}
+.vc-name{font-size:1.5rem;font-weight:400;margin-bottom:6px;color:var(--black)}
+.vc-desc{font-size:.73rem;color:var(--dg);line-height:1.5}
+.vc-addr{font-size:.68rem;color:var(--gray);margin-top:10px}
+
+/* MENU LAYOUT */
+.menu-layout{display:grid;grid-template-columns:1fr 300px;height:100vh;overflow:hidden}
+@media(max-width:700px){.menu-layout{grid-template-columns:1fr;grid-template-rows:1fr auto}.cart-panel{max-height:45vh}}
+.menu-left{overflow-y:auto}
+.menu-topbar{padding:12px 20px;background:var(--white);border-bottom:1px solid var(--lg);display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:20}
+.menu-topbar h2{font-size:1.1rem;font-weight:400}
+.cat-scroll{display:flex;overflow-x:auto;padding:0 20px;background:var(--white);border-bottom:1px solid var(--lg);position:sticky;top:53px;z-index:19;gap:0}
+.cat-scroll::-webkit-scrollbar{height:0}
+.cat-tab{padding:10px 14px;font-size:.65rem;letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;color:var(--gray);border-bottom:2px solid transparent;white-space:nowrap;font-weight:500;background:none;border-top:none;border-left:none;border-right:none;transition:all .15s;font-family:'Jost',sans-serif}
+.cat-tab.active{color:var(--black);border-bottom-color:var(--black)}
+.section-title{padding:16px 20px 8px;font-size:1.15rem;font-weight:400;color:var(--black);border-bottom:1px solid var(--lg)}
+.item-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--lg)}
+.item-name{font-size:.88rem;font-weight:500;color:var(--black);display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:3px}
+.item-desc{font-size:.7rem;color:var(--gray);line-height:1.4}
+.veg-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0}
+.item-price{font-size:.9rem;font-weight:600;color:var(--black);white-space:nowrap}
+.add-btn{background:var(--white);color:var(--black);border:1px solid var(--black);padding:6px 14px;font-size:.68rem;letter-spacing:1px;text-transform:uppercase;cursor:pointer;transition:all .15s;font-family:'Jost',sans-serif;white-space:nowrap}
+.add-btn:hover{background:var(--black);color:var(--white)}
+
+/* CART */
+.cart-panel{background:var(--white);border-left:1px solid var(--lg);display:flex;flex-direction:column;overflow:hidden}
+.cart-head{padding:14px 16px;border-bottom:1px solid var(--lg);display:flex;justify-content:space-between;align-items:center}
+.cart-head h3{font-size:1.1rem;font-weight:400}
+.cart-badge{background:var(--black);color:var(--white);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:600}
+.cart-body{flex:1;overflow-y:auto}
+.cart-empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--mg);font-size:.8rem;flex-direction:column;gap:8px}
+.cart-item{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--lg)}
+.ci-name{font-size:.8rem;font-weight:500}
+.ci-price{font-size:.7rem;color:var(--gray)}
+.qty-ctrl{display:flex;align-items:center;gap:6px}
+.qty-btn{width:22px;height:22px;border:1px solid var(--lg);background:var(--white);font-size:.85rem;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .1s}
+.qty-btn:hover{background:var(--black);color:var(--white);border-color:var(--black)}
+.cart-foot{padding:14px 16px;border-top:1px solid var(--lg)}
+.total-row{display:flex;justify-content:space-between;font-size:.85rem;margin-bottom:10px}
+.total-row strong{font-weight:600}
+.order-btn{width:100%;background:var(--black);color:var(--white);border:none;padding:13px;font-size:.72rem;letter-spacing:2px;text-transform:uppercase;cursor:pointer;border-radius:2px;transition:background .15s}
+.order-btn:hover{background:#333}
+.order-btn:disabled{background:var(--mg);cursor:not-allowed}
+
+/* CHECKOUT FORM */
+.checkout{padding:12px 16px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;flex:1}
+.f-label{font-size:.6rem;letter-spacing:2px;text-transform:uppercase;color:var(--gray);display:block;margin-bottom:4px}
+.f-input{width:100%;background:var(--off);border:1px solid var(--lg);padding:9px 12px;font-size:.82rem;outline:none;transition:border .15s;border-radius:2px}
+.f-input:focus{border-color:var(--black)}
+.f-select{width:100%;background:var(--off);border:1px solid var(--lg);padding:9px 12px;font-size:.82rem;outline:none;border-radius:2px}
+.back-link{background:none;border:none;color:var(--gray);font-size:.72rem;text-decoration:underline;cursor:pointer;padding:0;text-align:left;letter-spacing:.5px}
+
+/* SUCCESS */
+.success{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;text-align:center;padding:40px;background:var(--white)}
+.success-icon{font-size:3rem;margin-bottom:20px}
+.success h2{font-size:2rem;font-weight:300;margin-bottom:8px}
+.success p{color:var(--gray);margin-bottom:24px;font-size:.85rem}
+.success-id{font-family:'Jost',sans-serif;font-size:.8rem;background:var(--paper);padding:8px 20px;display:inline-block;margin-bottom:16px;letter-spacing:2px;border:1px solid var(--lg)}
+.success-btn{background:var(--black);color:var(--white);border:none;padding:12px 32px;font-size:.72rem;letter-spacing:2px;text-transform:uppercase;cursor:pointer;border-radius:2px}
+
+/* CHAT */
+.chat-wrap{display:flex;flex-direction:column;height:100vh}
+.chat-top{padding:12px 20px;border-bottom:1px solid var(--lg);background:var(--white);display:flex;align-items:center;gap:10px}
+.chat-msgs{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:12px;background:var(--off)}
+.msg{display:flex;gap:8px;max-width:560px}
+.msg.user{align-self:flex-end;flex-direction:row-reverse}
+.msg-avatar{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.7rem;flex-shrink:0;margin-top:2px}
+.msg.user .msg-avatar{background:var(--black);color:var(--white)}
+.msg.bot .msg-avatar{background:var(--lg);color:var(--dg)}
+.msg-bubble{padding:10px 14px;font-size:.83rem;line-height:1.6;border-radius:6px}
+.msg.user .msg-bubble{background:var(--black);color:var(--white)}
+.msg.bot .msg-bubble{background:var(--white);border:1px solid var(--lg)}
+.chat-welcome{text-align:center;padding:40px 20px}
+.chat-welcome h3{font-size:2rem;letter-spacing:4px;margin-bottom:4px}
+.chat-welcome p{color:var(--gray);font-size:.83rem;margin-bottom:20px}
+.sug-chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+.sug-chip{background:var(--white);border:1px solid var(--lg);padding:7px 14px;font-size:.72rem;cursor:pointer;border-radius:20px;color:var(--gray);transition:all .15s}
+.sug-chip:hover{border-color:var(--black);color:var(--black)}
+.chat-input-area{padding:14px 20px;border-top:1px solid var(--lg);background:var(--white);display:flex;gap:8px}
+.chat-ta{flex:1;background:var(--off);border:1px solid var(--lg);padding:10px 14px;font-size:.83rem;outline:none;resize:none;border-radius:4px;min-height:42px;font-family:'Jost',sans-serif}
+.chat-ta:focus{border-color:var(--black)}
+.chat-send{background:var(--black);color:var(--white);border:none;padding:10px 18px;font-size:.7rem;letter-spacing:1px;text-transform:uppercase;border-radius:4px;cursor:pointer}
+.chat-send:disabled{background:var(--mg);cursor:not-allowed}
+
+/* MISC */
+.loading{display:flex;align-items:center;justify-content:center;height:100vh;gap:10px;color:var(--gray);font-size:.8rem}
+.spin{width:16px;height:16px;border:2px solid var(--lg);border-top-color:var(--black);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.btn-back{background:none;border:1px solid var(--lg);padding:7px 14px;font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--gray);cursor:pointer;border-radius:2px;transition:all .15s}
+.btn-back:hover{border-color:var(--dg);color:var(--ink)}
+
+/* ── MOBILE IMPROVEMENTS ── */
+@media(max-width:700px){
+  /* Menu layout — stack vertically */
+  .menu-layout{grid-template-columns:1fr;grid-template-rows:1fr auto;height:auto;min-height:100vh}
+  
+  /* Cart panel — fixed bottom sheet */
+  .cart-panel{
+    position:fixed;bottom:0;left:0;right:0;
+    max-height:50vh;border-left:none;
+    border-top:2px solid var(--lg);
+    border-radius:16px 16px 0 0;
+    box-shadow:0 -4px 24px rgba(0,0,0,.12);
+    z-index:100;background:var(--white);
+  }
+  
+  /* Menu left — add bottom padding so cart doesn't cover items */
+  .menu-left{padding-bottom:220px}
+  
+  /* Top bar — smaller */
+  .menu-topbar{padding:10px 14px}
+  .menu-topbar h2{font-size:1rem}
+  
+  /* Category tabs — better touch targets */
+  .cat-scroll{padding:0 10px}
+  .cat-tab{padding:10px 12px;font-size:0.62rem}
+  
+  /* Item rows — full width */
+  .item-row{padding:12px 14px;gap:8px}
+  .item-name{font-size:0.82rem}
+  .item-desc{font-size:0.68rem}
+  .item-price{font-size:0.85rem}
+  .add-btn{padding:6px 12px;font-size:0.65rem}
+  
+  /* Section title */
+  .section-title{padding:12px 14px 6px;font-size:1rem}
+  
+  /* Cart items */
+  .cart-head{padding:10px 14px}
+  .cart-item{padding:8px 14px}
+  .cart-foot{padding:10px 14px}
+  .checkout{padding:10px 14px}
+  
+  /* Hero */
+  .logo{font-size:3.5rem;letter-spacing:6px}
+  .hero-btns{gap:8px}
+  .hbtn{padding:11px 24px;font-size:0.65rem}
+  
+  /* Chat */
+  .chat-top{padding:10px 14px}
+  .chat-msgs{padding:14px}
+  .chat-input-area{padding:10px 14px}
+  .sug-chips{gap:6px}
+  .sug-chip{padding:6px 10px;font-size:0.68rem}
+
+  /* Venue grid */
+  .venue-grid{grid-template-columns:1fr;padding:20px}
+  .vc-name{font-size:1.2rem}
+
+  /* Success page */
+  .success{padding:24px 16px}
+}
+
+@media(max-width:380px){
+  .logo{font-size:2.8rem}
+  .item-row{flex-wrap:wrap}
+  .cart-panel{max-height:55vh}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-type="module">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// Customer app talks to port 5001 (customer server)
+// Always talk to port 5001 (customer server)
+const API = `${window.location.protocol}//${window.location.hostname}:5001/api`;
+
+async function api(path, opts={}) {
+  const r = await fetch(`${API}${path}`, {
+    ...opts, headers: {'Content-Type':'application/json', ...(opts.headers||{})}
+  });
+  if (!r.ok) { const e = await r.json().catch(()=>({error:'Error'})); throw new Error(e.error||'Failed'); }
+  return r.json();
+}
+
+function useCart() {
+  const [items,setItems] = useState([]);
+  const add = (item) => setItems(p => {
+    const ex = p.find(i=>i.id===item.id);
+    return ex ? p.map(i=>i.id===item.id?{...i,quantity:i.quantity+1}:i) : [...p,{...item,quantity:1}];
+  });
+  const remove = (id) => setItems(p => p.map(i=>i.id===id?{...i,quantity:i.quantity-1}:i).filter(i=>i.quantity>0));
+  const clear = () => setItems([]);
+  const total = items.reduce((s,i)=>s+i.price*i.quantity,0);
+  const count = items.reduce((s,i)=>s+i.quantity,0);
+  return {items,add,remove,clear,total,count};
+}
+
+// ── SPLASH ──
+function Splash({onSelectVenue}) {
+  const [venues,setVenues] = useState([]);
+  const [geo,setGeo] = useState(null); // {status, distance_km, venue, message}
+  const [loading,setLoading] = useState(true);
+  const [mode,setMode] = useState('splash'); // splash | venues
+
+  useEffect(() => {
+    // Check URL for QR code
+    const pathParts = window.location.pathname.split('/');
+    const qrIdx = pathParts.indexOf('qr');
+    if (qrIdx >= 0) {
+      const qrId = pathParts[qrIdx+1];
+      if (qrId) { resolveQR(qrId); return; }
+    }
+    api('/venues').then(setVenues).finally(()=>setLoading(false));
+  }, []);
+
+  const resolveQR = (qrId) => {
+    const resolve = (lat, lon) => {
+      api('/qr/resolve', {method:'POST', body:JSON.stringify({qr_id:qrId, latitude:lat, longitude:lon})})
+        .then(r => {
+          if (r.status === 'ok') {
+            onSelectVenue(r.venue, r.table_id);
+          } else if (r.status === 'outside_range') {
+            setGeo(r);
+            setVenues(r.venue ? [r.venue] : []);
+            setMode('venues');
+          } else {
+            setVenues(r.venues || []);
+            setMode('venues');
+          }
+        }).finally(()=>setLoading(false));
+    };
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        p => resolve(p.coords.latitude, p.coords.longitude),
+        () => resolve(null, null)
+      );
+    } else {
+      resolve(null, null);
+    }
+  };
+
+  const browseVenues = () => {
+    setLoading(true);
+    // Try GPS-based detection first
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        p => {
+          api('/qr/resolve', {method:'POST', body:JSON.stringify({latitude:p.coords.latitude, longitude:p.coords.longitude})})
+            .then(r => {
+              if (r.status === 'ok' && r.venue) {
+                onSelectVenue(r.venue, null);
+              } else {
+                setGeo(r.status === 'outside_range' ? r : null);
+                setVenues(r.venues || (r.venue ? [r.venue] : []));
+                setMode('venues');
+              }
+            }).finally(()=>setLoading(false));
+        },
+        () => {
+          api('/venues').then(setVenues).finally(()=>setLoading(false));
+          setMode('venues');
+        }
+      );
+    } else {
+      api('/venues').then(setVenues).finally(()=>setLoading(false));
+      setMode('venues');
+    }
+  };
+
+  if (loading) return <div className="loading"><div className="spin"/>Detecting location…</div>;
+
+  if (mode === 'venues') return (
+    <div style={{minHeight:'100vh',background:'var(--off)'}}>
+      <div style={{background:'var(--black)',padding:'20px 40px',display:'flex',alignItems:'center',gap:16}}>
+        <h1 style={{color:'var(--white)',fontWeight:300,letterSpacing:6,fontSize:'2rem'}}>aosa</h1>
+        <span style={{color:'rgba(255,255,255,.4)',fontSize:'.65rem',letterSpacing:3,textTransform:'uppercase'}}>Bakehouse & Roastery</span>
+      </div>
+      {geo && geo.status==='outside_range' && (
+        <div className="geo-banner">
+          📍 You are {Math.round((geo.distance_km||0)*1000)}m from the nearest restaurant.
+          Menu is still accessible — tap to order.
+        </div>
+      )}
+      <div style={{padding:'32px 40px'}}>
+        <h2 style={{fontWeight:300,fontSize:'1.8rem',marginBottom:6}}>Choose a Venue</h2>
+        <p style={{color:'var(--gray)',fontSize:'.73rem',marginBottom:28}}>Select where you'd like to order from</p>
+        <div className="venue-grid" style={{padding:0}}>
+          {venues.map(v => (
+            <div key={v.id} className="venue-card" onClick={()=>onSelectVenue(v,null)}>
+              <div className="vc-type">{v.type}</div>
+              <div className="vc-name">{v.name}</div>
+              <div className="vc-desc">{v.description}</div>
+              {v.address && <div className="vc-addr">📍 {v.address}</div>}
+              <div style={{position:'absolute',top:24,right:20,color:'var(--mg)',transition:'all .2s',fontSize:'1.2rem'}}>→</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{minHeight:'100vh'}}>
+      <div className="hero">
+        <div className="hero-bg"/>
+        <div className="hero-content">
+          <div className="logo">aosa</div>
+          <div className="tagline">Bakehouse & Roastery · Udaipur</div>
+          <div className="divider"/>
+          <div className="hero-desc">
+            Artisan coffee, fresh pastries &amp; wholesome food<br/>crafted with passion every day
+          </div>
+          <div className="hero-btns">
+            <button className="hbtn solid" onClick={browseVenues}>View Menu &amp; Order</button>
+            <button className="hbtn outline" onClick={()=>{browseVenues();}}>Chat with Mia 💬</button>
+          </div>
+          <div style={{marginTop:16,fontSize:'.6rem',color:'rgba(255,255,255,.3)',letterSpacing:'2px'}}>
+            📍 Scan QR at your table for instant ordering
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MENU + CART ──
+function MenuApp({venue, tableId, onBack}) {
+  const [menu,setMenu] = useState([]);
+  const [active,setActive] = useState('');
+  const [view,setView] = useState('browse'); // browse | checkout | success
+  const [result,setResult] = useState(null);
+  const [placing,setPlacing] = useState(false);
+  const [mode,setMode] = useState('menu'); // menu | chat
+  const [prefs,setPrefs] = useState({
+    customer_name:'', order_type:'dine-in',
+    spice_level:'medium', portion_size:'regular',
+    seating_area:'', special_instructions:''
+  });
+  const cart = useCart();
+  const refs = useRef({});
+
+  useEffect(()=>{
+    api(`/venues/${venue.id}/menu`).then(d=>{
+      setMenu(d);
+      if(d[0]) setActive(d[0].category);
+    });
+  },[venue.id]);
+
+  const scrollTo = (cat) => {
+    setActive(cat);
+    refs.current[cat]?.scrollIntoView({behavior:'smooth',block:'start'});
+  };
+
+  const placeOrder = async() => {
+    setPlacing(true);
+    try {
+      const r = await api(`/venues/${venue.id}/orders`, {
+        method:'POST',
+        body: JSON.stringify({
+          ...prefs,
+          table_id: tableId,
+          items: cart.items.map(i=>({id:i.id, quantity:i.quantity, price:i.price}))
+        })
+      });
+      cart.clear();
+      setResult(r);
+      setView('success');
+    } catch(e) { alert(e.message); }
+    setPlacing(false);
+  };
+
+  if (mode === 'chat') return <ChatApp venue={venue} cart={cart} onBack={()=>setMode('menu')}/>;
+
+  if (view === 'success') return (
+    <div className="success">
+      <div className="success-icon">✓</div>
+      <h2>Order Placed!</h2>
+      <p>Your order is being prepared with care.<br/>Thank you for choosing <em>aosa</em>.</p>
+      <div className="success-id">#{result?.order_id?.slice(0,8).toUpperCase()}</div>
+      <p style={{fontSize:'.82rem',color:'var(--gray)',marginBottom:20}}>Total: <strong>₹{result?.total?.toFixed(0)}</strong></p>
+      <button className="success-btn" onClick={()=>setView('browse')}>Order More</button>
+    </div>
+  );
+
+  return (
+    <div className="menu-layout">
+      {/* LEFT: Menu */}
+      <div className="menu-left">
+        <div className="menu-topbar">
+          <button className="btn-back" onClick={onBack}>←</button>
+          <h2 style={{flex:1}}>{venue.name}</h2>
+          <button className="btn-back" onClick={()=>setMode('chat')} style={{display:'flex',alignItems:'center',gap:4}}>
+            💬 <span style={{fontSize:'.65rem'}}>Mia</span>
+          </button>
+        </div>
+        <div className="cat-scroll">
+          {menu.map(c=>(
+            <button key={c.category} className={`cat-tab ${active===c.category?'active':''}`}
+              onClick={()=>scrollTo(c.category)}>{c.category}</button>
+          ))}
+        </div>
+        {menu.map(cat=>(
+          <div key={cat.category} ref={el=>refs.current[cat.category]=el}>
+            <div className="section-title">{cat.category}</div>
+            {cat.items.map(item=>(
+              <div key={item.id} className="item-row">
+                <div style={{flex:1}}>
+                  <div className="item-name">
+                    {item.is_veg && <div className="veg-dot" title="Vegetarian"/>}
+                    {item.name}
+                  </div>
+                  {item.description && <div className="item-desc">{item.description}</div>}
+                </div>
+                <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:8,minWidth:80}}>
+                  <div className="item-price">₹{item.price.toFixed(0)}</div>
+                  <button className="add-btn" onClick={()=>cart.add(item)}>Add</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+        <div style={{height:40}}/>
+      </div>
+
+      {/* RIGHT: Cart */}
+      <div className="cart-panel">
+        <div className="cart-head">
+          <h3>Your Order</h3>
+          {cart.count > 0 && <div className="cart-badge">{cart.count}</div>}
+        </div>
+
+        {cart.items.length === 0 ? (
+          <div className="cart-empty"><span style={{fontSize:'1.5rem'}}>—</span><span>Your order is empty</span></div>
+        ) : view === 'browse' ? (
+          <>
+            <div className="cart-body">
+              {cart.items.map(i=>(
+                <div key={i.id} className="cart-item">
+                  <div style={{flex:1}}>
+                    <div className="ci-name">{i.name}</div>
+                    <div className="ci-price">₹{(i.price*i.quantity).toFixed(0)}</div>
+                  </div>
+                  <div className="qty-ctrl">
+                    <button className="qty-btn" onClick={()=>cart.remove(i.id)}>−</button>
+                    <span style={{fontSize:'.82rem',minWidth:14,textAlign:'center'}}>{i.quantity}</span>
+                    <button className="qty-btn" onClick={()=>cart.add(i)}>+</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="cart-foot">
+              <div className="total-row"><span>Subtotal</span><span>₹{cart.total.toFixed(0)}</span></div>
+              <div className="total-row" style={{color:'var(--gray)',fontSize:'.72rem'}}><span>GST (5%)</span><span>₹{(cart.total*0.05).toFixed(0)}</span></div>
+              <div className="total-row"><span><strong>Total</strong></span><strong>₹{(cart.total*1.05).toFixed(0)}</strong></div>
+              <button className="order-btn" onClick={()=>setView('checkout')}>Proceed to Order →</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="checkout">
+              <button className="back-link" onClick={()=>setView('browse')}>← Edit cart</button>
+              <div>
+                <label className="f-label">Your Name</label>
+                <input className="f-input" value={prefs.customer_name}
+                  onChange={e=>setPrefs({...prefs,customer_name:e.target.value})} placeholder="First name"/>
+              </div>
+              <div>
+                <label className="f-label">Order Type</label>
+                <select className="f-select" value={prefs.order_type}
+                  onChange={e=>setPrefs({...prefs,order_type:e.target.value})}>
+                  <option value="dine-in">Dine In</option>
+                  <option value="takeaway">Takeaway</option>
+                </select>
+              </div>
+              <div>
+                <label className="f-label">Seating / Table</label>
+                <input className="f-input" value={prefs.seating_area}
+                  onChange={e=>setPrefs({...prefs,seating_area:e.target.value})}
+                  placeholder="e.g. Table 5, Brewery, Side Seating"/>
+              </div>
+              <div>
+                <label className="f-label">Spice Level</label>
+                <select className="f-select" value={prefs.spice_level}
+                  onChange={e=>setPrefs({...prefs,spice_level:e.target.value})}>
+                  <option value="mild">Mild</option>
+                  <option value="medium">Medium</option>
+                  <option value="hot">Hot</option>
+                  <option value="extra-hot">Extra Hot 🔥</option>
+                </select>
+              </div>
+              <div>
+                <label className="f-label">Special Instructions</label>
+                <textarea className="f-input" value={prefs.special_instructions}
+                  onChange={e=>setPrefs({...prefs,special_instructions:e.target.value})}
+                  placeholder="Allergies, preferences…" style={{minHeight:60,resize:'none'}}/>
+              </div>
+            </div>
+            <div className="cart-foot">
+              <div className="total-row"><span><strong>Total</strong></span><strong>₹{(cart.total*1.05).toFixed(0)}</strong></div>
+              <button className="order-btn" disabled={placing} onClick={placeOrder}>
+                {placing ? 'Placing Order…' : `Place Order · ₹${(cart.total*1.05).toFixed(0)}`}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── CHAT with Mia ──
+function ChatApp({venue, cart, onBack}) {
+  const [messages,setMessages] = useState([]);
+  const [input,setInput] = useState('');
+  const [loading,setLoading] = useState(false);
+  const [name,setName] = useState('');
+  const [session] = useState(()=>Math.random().toString(36).slice(2));
+  const bottomRef = useRef(null);
+
+  useEffect(()=>{ bottomRef.current?.scrollIntoView({behavior:'smooth'}); },[messages]);
+
+  const send = async(msg) => {
+    const q = msg || input.trim();
+    if (!q || loading) return;
+    setInput('');
+    setMessages(p=>[...p,{role:'user',content:q}]);
+    setLoading(true);
+    try {
+      const r = await api(`/venues/${venue.id}/chat`, {
+        method:'POST',
+        body: JSON.stringify({message:q, session_id:session, customer_name:name})
+      });
+      setMessages(p=>[...p,{role:'assistant',content:r.reply}]);
+    } catch {
+      setMessages(p=>[...p,{role:'assistant',content:"I'm having a little trouble right now. Please ask our staff!"}]);
+    }
+    setLoading(false);
+  };
+
+  const suggestions = [
+    "What's your best coffee?", "Any vegetarian dishes?",
+    "Something sweet for dessert?", "What's popular today?",
+    "I want a light breakfast", "Recommend a cold coffee"
+  ];
+
+  return (
+    <div className="chat-wrap">
+      <div className="chat-top">
+        <button className="btn-back" onClick={onBack}>← Menu</button>
+        <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:'1.2rem',flex:1}}>Chat with Mia</span>
+        <input style={{background:'var(--off)',border:'1px solid var(--lg)',padding:'6px 12px',
+                       fontSize:'.75rem',outline:'none',borderRadius:4,width:130}}
+          placeholder="Your name" value={name} onChange={e=>setName(e.target.value)}/>
+      </div>
+      <div className="chat-msgs">
+        {messages.length===0 && (
+          <div className="chat-welcome">
+            <h3>aosa</h3>
+            <p>Hi{name?` ${name}`:''}! I'm Mia, your guide to our menu.<br/>Ask me anything — I'll find the perfect dish for you.</p>
+            <div className="sug-chips">
+              {suggestions.map(s=><button key={s} className="sug-chip" onClick={()=>send(s)}>{s}</button>)}
+            </div>
+          </div>
+        )}
+        {messages.map((m,i)=>(
+          <div key={i} className={`msg ${m.role==='user'?'user':'bot'}`}>
+            <div className="msg-avatar">
+              {m.role==='user' ? (name?name[0].toUpperCase():'U') : 'M'}
+            </div>
+            <div className="msg-bubble" style={{whiteSpace:'pre-wrap'}}>{m.content}</div>
+          </div>
+        ))}
+        {loading && (
+          <div className="msg bot">
+            <div className="msg-avatar">M</div>
+            <div className="msg-bubble" style={{color:'var(--gray)'}}>Mia is typing…</div>
+          </div>
+        )}
+        <div ref={bottomRef}/>
+      </div>
+      <div className="chat-input-area">
+        <textarea className="chat-ta" value={input}
+          onChange={e=>setInput(e.target.value)}
+          onKeyDown={e=>e.key==='Enter'&&!e.shiftKey&&(e.preventDefault(),send())}
+          placeholder="Ask about the menu…" rows={1}/>
+        <button className="chat-send" onClick={()=>send()} disabled={loading||!input.trim()}>
+          Send
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── ROOT ──
+function App() {
+  const [venue,setVenue] = useState(null);
+  const [tableId,setTableId] = useState(null);
+
+  const selectVenue = (v, tid) => {
+    setVenue(v);
+    setTableId(tid||null);
+  };
+
+  if (!venue) return <Splash onSelectVenue={selectVenue}/>;
+  return <MenuApp venue={venue} tableId={tableId} onBack={()=>setVenue(null)}/>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
