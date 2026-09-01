@@ -1617,7 +1617,7 @@ if __name__ == '__main__':
     print("\n☕ aosa Bakehouse & Roastery")
     print("=" * 50)
     print(f"   http://localhost:5555")
-    print(f"   Admin password : {ADMIN_PASSWORD}")
+    print(f"   Admin password : {admin123}")
     print(f"   Kitchen PIN    : {KITCHEN_PIN}")
     print(f"   Gemini AI      : {'✅ ready' if GOOGLE_API_KEY else '⚠️  set GOOGLE_API_KEY env var'}")
     print(f"   LangChain      : {'✅ agent mode' if LANGCHAIN_OK else 'ℹ️  raw Gemini mode (fine)'}")
